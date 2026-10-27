@@ -1,7 +1,0 @@
-{
-  "name": "Gatelock",
-  "identifier": "dev.callcc.gatelock",
-  "version": "0.1.0",
-  "main": "./cmd/gatelock",
-  "out": "build"
-}
