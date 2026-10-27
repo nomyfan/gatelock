@@ -231,22 +231,22 @@ runs/<runid>/
 - **兜底 kill**：app 发现连接断开后 kill 进程组，进程组 id 理论上可能已被复用，概率很低，可以接受。app 和 CLI 同时被强制杀掉时，子进程会成为孤儿进程，也可以接受。
 
 ## Implementation Roadmap
-- [ ] [risk validation] 最小可用的 `gatelock run`：和 MyGo app 用同一个二进制，env 先写死，加上最简的 ipc 和 launch
+- [x] [risk validation] 最小可用的 `gatelock run`：和 MyGo app 用同一个二进制，env 先写死，加上最简的 ipc 和 launch
       Purpose：验证同一个二进制按子命令分流、通过软链接调用的 CLI 能拉起 app、Claude Code 前台和后台运行、Claude Code 停止后台命令时收到的信号、退出码和 stdin 透传，并观察 agent 怎么写引用变量的命令
       Verification：在 Claude Code 里分别执行前台命令、后台的 `sleep` 循环再停止、`echo x | gatelock run ns -- cat`，以及 `exit 3`，检查行为和退出码
-- [ ] [core logic] `redact`：生成模式、精确前缀暂存、跨 Write 匹配、Close 时遮盖、并发写
+- [x] [core logic] `redact`：生成模式、精确前缀暂存、跨 Write 匹配、Close 时遮盖、并发写
       Purpose：这是核心能力，可以单独测试
       Verification：单测覆盖密钥被切在两次 Write 之间（中间停顿很久也不漏）、各种编码、重叠的密钥、短值的原值和完整编码（如 `abc` → `YWJj`、`616263`）都被脱敏、Close 时暂存的前缀被遮盖
-- [ ] [core logic] `vault`：存储格式、加解密、策略缓存、singleflight、Keychain 开关切换、改 passphrase（Authorizer 和 Keychain 用 fake）
+- [x] [core logic] `vault`：存储格式、加解密、策略缓存、singleflight、Keychain 开关切换、改 passphrase（Authorizer 和 Keychain 用 fake）
       Purpose：把存储和授权的行为固定下来
       Verification：单测覆盖三种策略（包括 Every 下并发请求各自授权、TTL 下并发请求只授权一次）、passphrase 错误后重试、Keychain 条目缺失或 passphrase 过期时退回手动输入并修复条目、改 passphrase 时 Keychain 写入失败返回 ErrKeychainStale 且之后能恢复、改名后数据不丢；磁盘上 grep 不到任何敏感值的明文
-- [ ] [platform] `macauth.ConfirmUser`（从 spike 改过来）+ 基于 `mygo.Secrets` 的 Keychain 实现
+- [x] [platform] `macauth.ConfirmUser`（从 spike 改过来）+ 基于 `mygo.Secrets` 的 Keychain 实现
       Purpose：接上真实的系统能力
       Verification：手动测试 Touch ID 通过和取消、Keychain 读写删
-- [ ] [core logic] `launch`：进程组、信号转发、stop、退出码、stdout/stderr 分开脱敏、Record 写慢时不阻塞
+- [x] [core logic] `launch`：进程组、信号转发、stop、退出码、stdout/stderr 分开脱敏、Record 写慢时不阻塞
       Purpose：保证 CLI 的行为符合契约
       Verification：单测覆盖退出码（正常、被信号杀、命令找不到）、stop 能杀掉子进程树、SIGTERM 转发、忽略 SIGTERM 的子进程在 5s 后被 SIGKILL（agent 发信号和 stop 两条路径都测）、第二次信号立即 SIGKILL、Record 阻塞时子进程照常运行
-- [ ] [integration] 完整的 `ipc` 和 `history`：请求校验、授权、登记、输出同步、看板停止、连接异常断开时兜底 kill、denied 记录、输出 4MB 截断、200 条清理
+- [x] [integration] 完整的 `ipc` 和 `history`：请求校验、授权、登记、输出同步、看板停止、连接异常断开时兜底 kill、denied 记录、输出 4MB 截断、200 条清理
       Purpose：把 CLI 和 app 完整连起来
       Verification：在临时目录里起真实的 socket，配合 fake Authorizer 写集成测试，跑通以下场景
         - 正常执行
@@ -256,7 +256,33 @@ runs/<runid>/
         - kill -9 掉 CLI 后，子进程被清理
         - 运行中关掉 app server 后，CLI 停掉子进程并以 125 退出，重启后记录为 lost
         - 授权中关掉 app server 后，CLI 以 125 退出，重启后记录为 lost，不会一直显示"等待授权"
-- [ ] [ui] MyGo native UI：Vellum 主题、namespace/env 管理（导入 .env 后列出导入的 key，确认后删除原文件；查看值时要授权；敏感开关）、namespace 设置（策略、Keychain、改 passphrase、上锁、删除）、passphrase 弹窗、执行看板、tray（运行中的数量 / 全部上锁 / 退出）、"安装命令行工具"（在 `~/.local/bin` 创建 `gatelock` 软链接，并检查登录 shell 的 PATH）、给 agent 用的说明片段，以及有命令在运行时退出前弹窗确认
+- [x] [ui] MyGo native UI：Vellum 主题、namespace/env 管理（导入 .env 后列出导入的 key，确认后删除原文件；查看值时要授权；敏感开关）、namespace 设置（策略、Keychain、改 passphrase、上锁、删除）、passphrase 弹窗、执行看板、tray（运行中的数量 / 全部上锁 / 退出）、"安装命令行工具"（在 `~/.local/bin` 创建 `gatelock` 软链接，并检查登录 shell 的 PATH）、给 agent 用的说明片段，以及有命令在运行时退出前弹窗确认
       Purpose：满足需求里的管理和看板场景
       Verification：按需求文档的 Scenarios 逐条手动走一遍
-- [ ] [e2e] 对照需求文档的 Success Criteria 逐条验收
+- [x] [e2e] 对照需求文档的 Success Criteria 逐条验收
+
+## Deviations from Design
+- 实现顺序：先写了各个核心包，最后才用真实二进制验证路线图第 1 步。第 1 步要验证的点都已实测通过。实测发现：Claude Code 停止后台任务时，先发 SIGTERM（gatelock 会转发给子进程），随后强杀整棵进程树，所以这条记录显示为 `lost`，子进程也已停止。
+- env 文件名改成 `env/<hex(KEY)>.age`：macOS 默认文件系统不区分大小写，`TOKEN` 和 `token` 会落到同一个文件。
+- vault 合并并发授权时没有用 singleflight，而是先查一次缓存，拿到授权锁后再查一次。Every 策略不写缓存，所以天然每个请求单独授权。这套机制同时实现了"授权弹窗全局排队"。
+- history：`Begin(namespace, argv, cwd, stop)` 直接返回 Record；状态变化拆成 `Authorized()`、`Exited(code)` 和 `End(status)` 三个方法。`Exited` 根据看板是否要求过停止，自己判断记为 stopped 还是 exited。另外加了 `Running()`，供 tray 和退出确认使用。
+- ipc：`Dial(socketPath, start)` 的 `start` 由 cmd 传入，负责拉起 app；`Run` 改为普通函数；`Session` 本身实现 `io.Writer`，用来同步输出，并且保证不阻塞；新增 `Session.Failed`，用于上报"命令启动失败"。原先写在 launch 里的"Record 不阻塞"测试，移到了 ipc。
+- 数据目录和 socket 统一用 `GATELOCK_HOME` 覆盖，取代原来的 `GATELOCK_SOCKET`。
+- CLI 用 `open -g <app> --args --background` 拉起 app，所以由 CLI 拉起时不打开主窗口。app 平时处于 Accessory 模式（不显示 Dock 图标），主窗口打开期间切换为 Regular。
+- 窗口风格参考 Mux：隐藏标题栏，红绿灯放在侧边栏上，页面顶部是一行紧凑的标题。只有标题部分可以拖动窗口，操作按钮放在拖动区域之外，否则点击会被拖动区域吞掉（实测过）。
+- 执行记录的输出面板会跟随最新输出，用户往上翻时停止跟随。
+- 设置对话框里，TTL 下拉框放到了单独一行，避免超出对话框宽度。
+- `cmd/gatelock/main_test.go` 用 MyGo 的 Tester 在内存里渲染界面，覆盖亮色和暗色下的各个页面、添加 env、在看板上停止命令。
+- 授权完成前在看板上点停止（按钮此时显示为 Cancel）：关掉授权弹窗，记录标为 `stopped`，CLI 以 125 退出，并提示 "stopped in Gatelock before it was authorized"。授权完成后点停止，仍然走原来的流程，由 CLI 停止子进程。
+- 开关 Keychain 时，以 meta 为准：打开时先写 Keychain 条目，再保存 meta，保存失败就删掉刚写的条目；关闭时先保存 meta，再删除条目，删除失败就把 meta 改回原值。任何 `update` 保存失败，内存里的 meta 都会回滚。开关 Keychain（两个方向）、删除 namespace，都和解锁共用授权锁，并且从头持有到结束。这样，停在确认窗口里的解锁请求，就不会在用户关掉 Keychain 或删掉 namespace 之后，又把 passphrase 写回 Keychain。为此 `Delete` 改为 `Delete(ctx, name)`；UI 在后台调用它，因为 passphrase 弹窗要靠主线程绘制，主线程不能等这把锁。
+- 托盘的 Lock All、每个 namespace 的 Lock Now、修改策略，都会清空界面上已显示的值；还在进行中的查看请求返回后，也不会再把值显示出来。
+
+## Acceptance (2026-10-27)
+在真实 app 上（`GATELOCK_HOME=/tmp/gl-dev`）用模拟点击走完了需求文档的 Success Criteria：
+- 磁盘上 grep 不到任何敏感值的明文；导入 `.env` 后，确认删除原文件
+- 前台执行：注入的 env、原值和 base64、hex 的脱敏、stdout 和 stderr 分开输出、退出码（命令自己的、125、127）、stdin 透传
+- 授权策略：Every 每次都问（手动输入 passphrase，输错后会提示重试，取消后 CLI 以 125 退出）；TTL 时效内不再询问；Session 在 app 重启后失效
+- 后台执行：Claude Code 停止后台任务后，忽略 SIGTERM 的子进程也被停止；看板上的停止按钮能用（记为 stopped，CLI 以 143 退出）
+- 有命令运行时退出 app 会弹窗确认；确认后命令被停止，记录为 stopped
+- Keychain 开关：关闭方向在 UI 上实测过；打开方向只有单测覆盖
+- 用打包后的 `.app` 实测：CLI 能在后台拉起 app，且不会打开主窗口
