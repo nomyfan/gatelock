@@ -512,3 +512,35 @@ func TestKeychainEntryStaysRemovedPastAnUnlockUnderWay(t *testing.T) {
 		}
 	}
 }
+
+func TestDotenvReadsBackAsItWas(t *testing.T) {
+	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, &fakeAuth{})
+	v.Create("ns", []byte("pw"), true, Policy{Mode: Every})
+	want := map[string]string{
+		"PIN":    "0123",
+		"DOLLAR": "pa$$word ${HOME} $HOME",
+		"QUOTES": `say "hi" and 'bye'`,
+		"BS":     `back\slash \n literal`,
+		"PEM":    "-----BEGIN KEY-----\r\nMIIB\n-----END KEY-----\n",
+		"HASH":   "a # not a comment",
+		"SPACE":  "  padded  ",
+		"EMPTY":  "",
+		"UNI":    "密码✓",
+	}
+	var secrets []Secret
+	for k, val := range want {
+		secrets = append(secrets, Secret{Key: k, Value: []byte(val)})
+	}
+	if _, err := v.Import("ns", Dotenv(secrets)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := v.Resolve(context.Background(), "ns", "test")
+	if len(got) != len(want) {
+		t.Fatalf("got %d envs", len(got))
+	}
+	for _, s := range got {
+		if string(s.Value) != want[s.Key] {
+			t.Errorf("%s: %q, want %q", s.Key, s.Value, want[s.Key])
+		}
+	}
+}

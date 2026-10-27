@@ -163,9 +163,12 @@ func (a *app) refresh() {
 		a.tray.SetTitle(trayTitle(running))
 	}
 	v.running = running
-	if v.chosenRun != "" {
-		if out, err := a.history.Output(v.chosenRun); err == nil {
-			v.output = tail(string(out), 200<<10)
+	for id, rv := range v.runViews {
+		if !rv.open {
+			continue
+		}
+		if out, err := a.history.Output(id); err == nil {
+			rv.output = tail(string(out), 200<<10)
 		}
 	}
 	if a.win != nil {
@@ -315,7 +318,7 @@ func (p *passphrasePrompt) view(c *ui.Context) {
 			if ui.Button(c, "Cancel").Clicked() {
 				p.give(nil)
 			}
-			unlock := ui.PrimaryButton(c, "Unlock").Disabled(p.value == "")
+			unlock := primaryButton(c, "Unlock").Disabled(p.value == "")
 			if (unlock.Clicked() || input.Submitted()) && p.value != "" {
 				p.give([]byte(p.value))
 			}

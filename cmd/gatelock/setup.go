@@ -117,7 +117,7 @@ func (a *app) setupPage(c *ui.Context) {
 	if !s.checked {
 		a.checkSetup()
 	}
-	header(c, setupIcon, "Setup", "Let agents run commands through Gatelock", nil)
+	a.header(c, setupIcon, "Setup", "Let agents run commands through Gatelock", nil)
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(t.Space(1), t.Space(5), t.Space(5), t.Space(5)).Gap(t.Space(4)).Children(func() {
 			card(c, func() {

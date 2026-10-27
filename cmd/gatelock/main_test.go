@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -87,13 +88,13 @@ func TestPagesInBothAppearances(t *testing.T) {
 		tt.Frame()
 		kind := map[bool]string{false: "light", true: "dark"}[dark]
 
-		if !tt.HasText("npm run dev") || !tt.HasText("running") || !tt.HasText("exit 0") {
+		if !tt.HasText("npm run dev") || !tt.HasText("npm run deploy") || tt.HasText("exit 0") {
 			t.Fatalf("%s runs page: %q", kind, tt.Texts())
 		}
 		if err := tt.Click("npm run deploy"); err != nil {
 			t.Fatal(err)
 		}
-		if !tt.HasText("deploying with [REDACTED:prod-api/STRIPE_KEY]\n") {
+		if !tt.HasText("deploying with [REDACTED:prod-api/STRIPE_KEY]") {
 			t.Errorf("%s: output not shown: %q", kind, tt.Texts())
 		}
 		snapshot(t, tt, "runs-"+kind)
@@ -109,7 +110,7 @@ func TestPagesInBothAppearances(t *testing.T) {
 		if err := tt.Click("Settings"); err != nil {
 			t.Fatal(err)
 		}
-		if !tt.HasText("prod-api Settings") {
+		if !tt.HasText("Keep in the Keychain") {
 			t.Errorf("%s: settings not open: %q", kind, tt.Texts())
 		}
 		snapshot(t, tt, "settings-"+kind)
@@ -120,12 +121,17 @@ func TestAddEnv(t *testing.T) {
 	a := testApp(t)
 	tt := ui.NewTester(a.mainView, 960, 640)
 	tt.Click("prod-api")
-	tt.Click("Key")
+	if err := tt.Click("Add Env…"); err != nil {
+		t.Fatal(err)
+	}
 	tt.Type("NEW_TOKEN")
 	tt.Click("Value")
 	tt.Type("secret")
 	if err := tt.Click("Add"); err != nil {
 		t.Fatal(err)
+	}
+	if a.view.form.open {
+		t.Fatal("the new row is still there")
 	}
 	ns, _ := a.vault.Namespace("prod-api")
 	var keys []string
@@ -144,12 +150,29 @@ func TestStopFromRunsPage(t *testing.T) {
 	rec.Authorized()
 	a.refresh()
 	tt := ui.NewTester(a.mainView, 960, 640)
-	tt.Click("sleep 60")
 	if err := tt.Click("Stop"); err != nil {
 		t.Fatal(err)
 	}
 	if !stopped {
 		t.Fatal("stop not asked")
+	}
+	if len(a.view.runViews) != 0 {
+		t.Fatal("stopping opened the run too")
+	}
+}
+
+func TestRunsOpenAndCloseOnTheirOwn(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("npm run deploy")
+	tt.Click("npm run dev")
+	if !tt.HasText("deploying with [REDACTED:prod-api/STRIPE_KEY]") || !tt.HasText("(no output)") {
+		t.Fatalf("both should be open: %q", tt.Texts())
+	}
+	tt.Click("npm run deploy")
+	tt.Advance(time.Second)
+	if tt.HasText("deploying with [REDACTED:prod-api/STRIPE_KEY]") || !tt.HasText("(no output)") {
+		t.Fatalf("only npm run dev should be open: %q", tt.Texts())
 	}
 }
 
@@ -176,5 +199,129 @@ func TestLockHidesValuesShownAndUnderWay(t *testing.T) {
 	}
 	if a.view.revealGen == gen {
 		t.Fatal("a reveal under way would still show its values")
+	}
+}
+
+func TestCopyShowsOnlyWithTheValue(t *testing.T) {
+	a := testApp(t)
+	a.view.page = nsPage("prod-api")
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if _, ok := tt.Find("Copy Value"); ok {
+		t.Fatal("copy offered for a hidden value")
+	}
+	a.view.revealedNS, a.view.revealed = "prod-api", map[string]string{"STRIPE_KEY": "sk_live_1", "PORT": "5432"}
+	tt.Frame()
+	// Not clicked: the clipboard is the system's, and needs the running app.
+	if _, ok := tt.Find("Copy Value"); !ok {
+		t.Fatalf("copy not offered for a value shown: %q", tt.Texts())
+	}
+}
+
+func TestWritePrivateFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env.prod-api")
+	os.WriteFile(path, []byte("old, longer content"), 0o644)
+	if err := writePrivateFile(path, []byte("A=\"1\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	data, _ := os.ReadFile(path)
+	if info.Mode().Perm() != 0o600 || string(data) != "A=\"1\"\n" {
+		t.Fatalf("mode %v, content %q", info.Mode().Perm(), data)
+	}
+}
+
+func TestDeleteFromSidebarShowsOnHover(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if _, ok := tt.Find("Delete prod-api…"); ok {
+		t.Fatal("delete shown without hover")
+	}
+	r, _ := tt.Find("prod-api")
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+	if err := tt.Click("Delete prod-api…"); err != nil {
+		t.Fatalf("delete not shown on hover: %v", err)
+	}
+	if !a.view.deletingNS || a.view.deleteNS != "prod-api" || a.view.page != pageRuns {
+		t.Fatalf("deleting %v %q, page %q", a.view.deletingNS, a.view.deleteNS, a.view.page)
+	}
+}
+
+func TestAddEnvLeftWithEscape(t *testing.T) {
+	a := testApp(t)
+	a.view.page = nsPage("prod-api")
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("Add Env…")
+	tt.Type("DRAFT")
+	tt.Key(0, ui.KeyEscape)
+	ns, _ := a.vault.Namespace("prod-api")
+	if a.view.form.open || len(ns.Envs) != 2 {
+		t.Fatalf("adding %v, envs %v", a.view.form.open, ns.Envs)
+	}
+}
+
+func TestAddMultilineEnv(t *testing.T) {
+	a := testApp(t)
+	a.view.page = nsPage("prod-api")
+	// As if shown, so that the value added shows as stored.
+	a.view.revealedNS, a.view.revealed = "prod-api", map[string]string{}
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("Add Env…")
+	tt.Type("CERT")
+	tt.Click("Value")
+	tt.Type("line 1")
+	tt.Key(ui.Shift, ui.KeyEnter)
+	tt.Type("line 2")
+	if !a.view.form.open {
+		t.Fatal("Shift+Enter added the env")
+	}
+	tt.Key(0, ui.KeyEnter)
+	if a.view.form.open {
+		t.Fatal("Enter did not add the env")
+	}
+	if got := a.view.revealed["CERT"]; got != "line 1\nline 2" {
+		t.Fatalf("CERT is %q", got)
+	}
+}
+
+func TestEditEnvInline(t *testing.T) {
+	a := testApp(t)
+	a.view.page = nsPage("prod-api")
+	a.view.revealedNS, a.view.revealed = "prod-api", map[string]string{"PORT": "5432", "STRIPE_KEY": "sk_live_1"}
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("Edit Value") // PORT's, the first
+	if f := a.view.form; !f.open || !f.editing || f.key != "PORT" || f.value != "5432" || f.mask {
+		t.Fatalf("form %+v", f)
+	}
+	tt.Type("1")
+	want := a.view.form.value
+	tt.Key(0, ui.KeyEnter)
+	if a.view.form.open || want == "5432" || a.view.revealed["PORT"] != want {
+		t.Fatalf("open %v, typed %q, stored %q", a.view.form.open, want, a.view.revealed["PORT"])
+	}
+	ns, _ := a.vault.Namespace("prod-api")
+	if len(ns.Envs) != 2 || ns.Envs[0].Sensitive {
+		t.Fatalf("envs %+v", ns.Envs)
+	}
+}
+
+// Cmd+B and the title bar's button hide the sidebar and show it again.
+func TestToggleSidebar(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Key(ui.Cmd, ui.KeyB)
+	if !a.view.sidebarHidden {
+		t.Fatal("Cmd+B left the sidebar shown")
+	}
+	tt.Advance(time.Second)
+	// Into the room the sidebar left, clear of the toggle at 8 to 34.
+	if r, ok := tt.Find("1 running now"); !ok || r.X < 34 || r.X > sidebarWidth {
+		t.Fatalf("the header's subtitle at %v", r)
+	}
+	if err := tt.Click("Show Sidebar"); err != nil {
+		t.Fatal(err)
+	}
+	if a.view.sidebarHidden {
+		t.Fatal("the button left the sidebar hidden")
 	}
 }

@@ -427,6 +427,20 @@ func (v *Vault) Import(name string, dotenv []byte) ([]string, error) {
 	return keys, nil
 }
 
+// dotenvEscaper escapes a value within double quotes, as godotenv reads
+// it back: without expanding $VARS, and with its line breaks.
+var dotenvEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "\n", `\n`, "\r", `\r`)
+
+// Dotenv returns secrets as a .env file, which Import reads back as they
+// are. Every value is quoted: godotenv.Marshal would write "0123" as 123.
+func Dotenv(secrets []Secret) []byte {
+	var b strings.Builder
+	for _, s := range secrets {
+		fmt.Fprintf(&b, "%s=\"%s\"\n", s.Key, dotenvEscaper.Replace(string(s.Value)))
+	}
+	return []byte(b.String())
+}
+
 // Resolve returns the values of the namespace, asking the user first unless
 // an authorization within its Policy holds. Under TTL and Session, requests
 // that come while the user is asked share their answer; under Every, each
