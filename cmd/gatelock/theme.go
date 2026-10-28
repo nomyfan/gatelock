@@ -98,10 +98,13 @@ func confirmDialog(c *ui.Context, open *bool, title, message, cancel, confirm st
 	t := c.Theme()
 	confirmed := false
 	ui.Modal(c, open, func() {
-		ui.Column(c).Width(400).Gap(t.Space(3)).Children(func() {
-			ui.Text(c, title).FontSize(t.FontSize + 3).Bold().Wrap()
-			ui.Text(c, message).TextColor(t.TextMuted).Wrap()
-			ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Margin(t.Space(3), 0, 0, 0).Children(func() {
+		ui.Column(c).Width(400).Gap(t.Space(3)).Shrink(1).MinHeight(0).Children(func() {
+			ui.Text(c, title).FontSize(t.FontSize + 3).Bold().Wrap().Shrink(0)
+			// A long message scrolls, so that the buttons stay in the window.
+			ui.Scroll(c.Key("message")).Shrink(1).MinHeight(0).Children(func() {
+				ui.Text(c, message).TextColor(t.TextMuted).Wrap()
+			})
+			ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Margin(t.Space(3), 0, 0, 0).Shrink(0).Children(func() {
 				if ui.Button(c, cancel).Clicked() {
 					*open = false
 				}
@@ -121,12 +124,14 @@ func toggle(c *ui.Context, on *bool) ui.Element {
 }
 
 // copyable is a button showing what content builds, text that a click
-// copies, which label names. It is highlighted while hovered, as plain
-// text would not show it can be clicked.
-func copyable(c *ui.Context, key, label string, content func()) ui.Element {
+// copies, which label names and tip, its tooltip, says more of. It is
+// highlighted while hovered, as plain text would not show it can be
+// clicked. It shrinks, unlike a button, so that long text ends in an
+// ellipsis rather than overlapping what follows.
+func copyable(c *ui.Context, key, label, tip string, content func()) ui.Element {
 	t := c.Theme()
-	b := ui.ButtonBase(c.Key(key)).Padding(2, copyInset(c)).Radius(4).MinWidth(0).Cursor(ui.CursorPointer).
-		Label(label).Tooltip("Click to copy")
+	b := ui.ButtonBase(c.Key(key)).Padding(2, copyInset(c)).Radius(4).Shrink(1).MinWidth(0).Cursor(ui.CursorPointer).
+		Label(label).Tooltip(tip)
 	if b.Pressed() {
 		b.Background(t.Text.Alpha(0.14))
 	} else if b.Hovered() {

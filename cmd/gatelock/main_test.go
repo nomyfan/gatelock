@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -493,5 +494,44 @@ func TestToggleSidebar(t *testing.T) {
 	}
 	if a.view.sidebarHidden {
 		t.Fatal("the button left the sidebar hidden")
+	}
+}
+
+func TestLongConfirmKeepsButtonsInView(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageVault("prod-api")
+	for i := range 300 {
+		a.view.imported = append(a.view.imported, fmt.Sprintf("SOME_RATHER_LONG_KEY_%d", i))
+	}
+	a.view.importedFrom, a.view.askRemove = "/work/api/.env", true
+	tt := ui.NewTester(a.mainView, 960, 640)
+	snapshot(t, tt, "long-confirm")
+	for _, label := range []string{"Keep It", "Delete"} {
+		r, ok := tt.Find(label)
+		if !ok || r.Y < 0 || r.Y+r.H > 640 {
+			t.Fatalf("%s at %v, shown %v", label, r, ok)
+		}
+	}
+}
+
+func TestLongKeyKeepsToItsColumn(t *testing.T) {
+	a := testApp(t)
+	a.vaults.SetEnv("prod-api", "APP_RELEASES_JSON_URL_TEMPLATE_FOR_THE_STABLE_CHANNEL", []byte("x"))
+	a.refresh()
+	a.view.page = pageVault("prod-api")
+	tt := ui.NewTester(a.mainView, 960, 640)
+	column := func() (key, value ui.Rect) {
+		key, _ = tt.Find("Copy APP_RELEASES_JSON_URL_TEMPLATE_FOR_THE_STABLE_CHANNEL")
+		value, _ = tt.Find("••••••••")
+		if key.X+key.W > value.X {
+			t.Fatalf("key at %v overlaps the value at %v", key, value)
+		}
+		return key, value
+	}
+	narrow, _ := column()
+	tt.SetSize(1400, 640)
+	tt.Frame()
+	if wide, _ := column(); wide.W <= narrow.W {
+		t.Fatalf("key %v wide in a wider window, %v before", wide.W, narrow.W)
 	}
 }

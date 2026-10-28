@@ -355,6 +355,9 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 	})
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(t.Space(1), t.Space(5), t.Space(5), t.Space(5)).Gap(t.Space(4)).Children(func() {
+			ui.Text(c, "Run a command with these env:").TextColor(t.TextMuted).FontSize(t.FontSize - 1)
+			ui.Text(c, "gatelock run "+name+" -- <command> [args...]").Font("monospace").Selectable().
+				Padding(t.Space(2), t.Space(3)).Background(t.Surface).Radius(t.Space(1.5))
 			card(c, func() {
 				adding := v.form.open && v.form.from == ""
 				if len(vt.Envs) == 0 && !adding {
@@ -377,9 +380,6 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 					a.envFormRow(c, name)
 				}
 			})
-			ui.Text(c, "Run a command with these env:").TextColor(t.TextMuted).FontSize(t.FontSize - 1)
-			ui.Text(c, "gatelock run "+name+" -- <command> [args...]").Font("monospace").Selectable().
-				Padding(t.Space(2), t.Space(3)).Background(t.Surface).Radius(t.Space(1.5))
 		})
 	})
 	a.envDialogs(c, name)
@@ -410,8 +410,9 @@ func (a *app) envRow(c *ui.Context, name string, e vault.Env) {
 		v.form = envForm{open: true, from: e.Key, key: e.Key, value: value, was: value, mask: e.Sensitive}
 	}
 	ui.Row(c.Key(e.Key)).AlignItems(ui.Center).Gap(t.Space(3)).Padding(t.Space(2), 0).Children(func() {
-		ui.Row(c).Width(220).Shrink(0).Children(func() {
-			if copyable(c, "key", "Copy "+e.Key, func() {
+		keyColumn(ui.Row(c)).Children(func() {
+			// The tooltip shows the whole key, which the column may cut short.
+			if copyable(c, "key", "Copy "+e.Key, e.Key+"\nClick to copy", func() {
 				ui.Text(c, e.Key).Font("monospace").Bold().SingleLine().MinWidth(0)
 			}).Clicked() {
 				mygo.Clipboard.WriteText(e.Key)
@@ -423,7 +424,7 @@ func (a *app) envRow(c *ui.Context, name string, e vault.Env) {
 				ui.Text(c, "••••••••").TextColor(t.TextMuted).Padding(0, copyInset(c))
 				return
 			}
-			if copyable(c, "value", "Copy the value of "+e.Key, func() {
+			if copyable(c, "value", "Copy the value of "+e.Key, "Click to copy", func() {
 				ui.Text(c, value).Font("monospace").SingleLine().MinWidth(0)
 			}).Clicked() {
 				a.copyValue(e.Key, value)
@@ -446,6 +447,11 @@ func (a *app) envRow(c *ui.Context, name string, e vault.Env) {
 		}
 	})
 }
+
+// keyColumn sizes the keys' column of the env list, in a row and in the
+// form alike, so that they line up: a share of the row, so that a wider
+// window shows more of a long key.
+func keyColumn(e ui.Element) ui.Element { return e.WidthPercent(45).MinWidth(220).Shrink(0) }
 
 // envForm is a row of the env list the user types in: a new env, or the
 // env from while editing, whose key and value may change.
@@ -483,7 +489,7 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 	// At the top, so that the key and the buttons stay by the value's first
 	// line as it grows.
 	ui.Row(c.Key("form")).AlignItems(ui.Start).Gap(t.Space(3)).Padding(t.Space(2), 0).Children(func() {
-		k := ui.TextInput(c.Key("key"), &f.key).Placeholder("KEY").Font("monospace").Width(220).Shrink(0).Label("Key")
+		k := keyColumn(ui.TextInput(c.Key("key"), &f.key).Placeholder("KEY").Font("monospace").Label("Key"))
 		if !editing {
 			k.AutoFocus()
 		}
@@ -574,8 +580,9 @@ func (a *app) envDialogs(c *ui.Context, name string) {
 		delete(v.revealed, v.deleteKey)
 		a.refresh()
 	}
-	message := fmt.Sprintf("Imported %s: %s.\n\nDelete %s, so that the values are no longer in the clear?",
-		plural(len(v.imported), "env", "env"), strings.Join(v.imported, ", "), v.importedFrom)
+	// The question comes first, as a long list of keys scrolls.
+	message := fmt.Sprintf("Delete %s, so that the values are no longer in the clear?\n\nImported %s: %s.",
+		v.importedFrom, plural(len(v.imported), "env", "env"), strings.Join(v.imported, ", "))
 	if confirmDialog(c, &v.askRemove, "Delete the .env file?", message, "Keep It", "Delete") {
 		if err := os.Remove(v.importedFrom); err != nil {
 			v.toast = err.Error()
