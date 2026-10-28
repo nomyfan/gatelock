@@ -107,7 +107,7 @@ func TestPagesInBothAppearances(t *testing.T) {
 		}
 		snapshot(t, tt, "vault-"+kind)
 
-		if err := tt.Click("Settings"); err != nil {
+		if err := tt.Click("Settings…"); err != nil {
 			t.Fatal(err)
 		}
 		if !tt.HasText("Keep in the Keychain") {
@@ -263,6 +263,18 @@ func TestDeleteFromSidebarShowsOnHover(t *testing.T) {
 	}
 	if !a.view.deletingVault || a.view.deleteVault != "prod-api" || a.view.page != pageActivities {
 		t.Fatalf("deleting %v %q, page %q", a.view.deletingVault, a.view.deleteVault, a.view.page)
+	}
+}
+
+func TestDotenvMenu(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageVault("prod-api")
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if err := tt.Click(".env File"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(tt.Menu(), ", "); got != "Import from .env…, Export to .env…" {
+		t.Fatalf("menu %q", got)
 	}
 }
 

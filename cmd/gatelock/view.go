@@ -326,13 +326,17 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 			a.lock(name)
 			v.toast = name + " is locked"
 		}
-		if iconButton(c, "import", importIcon, "Import .env…").Clicked() {
-			a.importDotenv(name)
-		}
-		if iconButton(c, "export", exportIcon, "Export .env…").Clicked() {
-			a.exportDotenv(name)
-		}
-		if iconButton(c, "settings", settingsIcon, "Settings").Clicked() {
+		// Import and export share one button, whose menu names the
+		// direction, which an arrow alone leaves to be guessed.
+		iconButton(c, "dotenv", fileIcon, ".env File").Menu(func(m *ui.Menu) {
+			if m.Item("Import from .env…").Chosen() {
+				a.importDotenv(name)
+			}
+			if m.Item("Export to .env…").Chosen() {
+				a.exportDotenv(name)
+			}
+		})
+		if iconButton(c, "settings", settingsIcon, "Settings…").Clicked() {
 			v.settings = settingsFormOf(vt)
 			v.vaultSettings = true
 		}
