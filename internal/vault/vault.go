@@ -73,6 +73,10 @@ type Vault struct {
 	Policy   Policy
 	Keychain bool // whether the Keychain keeps its passphrase
 	Envs     []Env
+	// Unlocked is whether a Resolve needs no authorization, until Expires
+	// if that is set.
+	Unlocked bool
+	Expires  time.Time
 }
 
 type Env struct {
@@ -227,6 +231,9 @@ func (sv *stored) vault() Vault {
 		Name:     sv.meta.Name,
 		Policy:   Policy{Mode: sv.meta.Policy.Mode, TTL: time.Duration(sv.meta.Policy.TTLSeconds) * time.Second},
 		Keychain: sv.meta.Keychain,
+	}
+	if sv.identity != nil && (sv.expires.IsZero() || time.Now().Before(sv.expires)) {
+		vault.Unlocked, vault.Expires = true, sv.expires
 	}
 	for _, e := range sv.meta.Envs {
 		vault.Envs = append(vault.Envs, Env(e))
@@ -516,19 +523,21 @@ func (s *Store) Resolve(ctx context.Context, name, reason string) ([]Secret, err
 		return nil, ErrNotFound
 	}
 	envs := slices.Clone(sv.meta.Envs)
-	paths := make([]string, len(envs))
+	// Read with s.mu held, so that renaming or deleting an env can't take
+	// a file the meta names away before it is read.
+	data := make([][]byte, len(envs))
 	for i, e := range envs {
-		paths[i] = s.envPath(sv, e.Key)
+		var err error
+		if data[i], err = os.ReadFile(s.envPath(sv, e.Key)); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
 	}
 	s.mu.Unlock()
 
 	secrets := make([]Secret, len(envs))
 	for i, e := range envs {
-		data, err := os.ReadFile(paths[i])
-		if err != nil {
-			return nil, err
-		}
-		r, err := age.Decrypt(bytes.NewReader(data), identity)
+		r, err := age.Decrypt(bytes.NewReader(data[i]), identity)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt %s: %w", e.Key, err)
 		}

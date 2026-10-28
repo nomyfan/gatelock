@@ -200,7 +200,7 @@ func (a *app) sidebar(c *ui.Context) {
 			}
 		})
 		for _, vt := range v.vaults {
-			item(c.Key(vt.Name), pageVault(vt.Name), lockIcon, vt.Name, v.page, func(hovered bool) {
+			item(c.Key(vt.Name), pageVault(vt.Name), a.vaultIcon(vt), vt.Name, v.page, func(hovered bool) {
 				// Shown while hovered, so as not to crowd the list, and over
 				// the item, which it would otherwise make taller.
 				if !hovered {
@@ -307,7 +307,7 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 	if vt.Keychain {
 		keychain = "passphrase in the Keychain"
 	}
-	a.header(c, lockIcon, vt.Name, describePolicy(vt.Policy)+", "+keychain, func() {
+	a.header(c, a.vaultIcon(vt), vt.Name, describePolicy(vt.Policy)+", "+keychain, func() {
 		if iconButton(c, "add", plusIcon, "Add Env…").Clicked() {
 			v.form = envForm{open: true, mask: true}
 		}
@@ -322,9 +322,18 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 				a.reveal(name)
 			}
 		}
-		if iconButton(c, "lock", lockIcon, "Lock Now").Clicked() {
-			a.lock(name)
-			v.toast = name + " is locked"
+		if !a.open(vt) {
+			iconButton(c, "lock", lockIcon, "Locked").Disabled(true)
+		} else {
+			label := "Lock Now"
+			if vt.Unlocked && !vt.Expires.IsZero() {
+				label += ", unlocked until " + vt.Expires.Format("15:04")
+			}
+			if iconButton(c, "lock", unlockIcon, label).Clicked() {
+				a.lock(name)
+				a.refresh()
+				v.toast = name + " is locked"
+			}
 		}
 		// Import and export share one button, whose menu names the
 		// direction, which an arrow alone leaves to be guessed.
@@ -375,6 +384,21 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 	})
 	a.envDialogs(c, name)
 	a.settingsDialog(c, vt)
+}
+
+// open is whether the vault is unlocked, or its values are shown: so
+// that it never shows locked with its values in the clear, as under
+// Every, which is never kept unlocked.
+func (a *app) open(vt vault.Vault) bool {
+	return vt.Unlocked || a.view.revealed != nil && a.view.revealedVault == vt.Name
+}
+
+// vaultIcon is a lock, open while the vault is.
+func (a *app) vaultIcon(vt vault.Vault) *ui.SVG {
+	if a.open(vt) {
+		return unlockIcon
+	}
+	return lockIcon
 }
 
 func (a *app) envRow(c *ui.Context, name string, e vault.Env) {
@@ -430,10 +454,12 @@ type envForm struct {
 	// from is the key of the env edited, "" while adding.
 	from       string
 	key, value string
-	// was is the value shown when editing began, "" if hidden: the value is
-	// saved only if it changed from it.
-	was  string
-	mask bool
+	// was is the value shown when editing began, "" if hidden; typed is
+	// whether the value was typed in since. The value is saved if typed
+	// in, so that it may be emptied, and changed from was.
+	was   string
+	typed bool
+	mask  bool
 	// submit is set by Enter in the value, between frames.
 	submit bool
 }
@@ -463,7 +489,7 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 		}
 		submit = submit || k.Submitted()
 		placeholder := "Value"
-		if editing && f.was == "" {
+		if editing && f.was == "" && !f.typed {
 			placeholder = "Unchanged"
 		}
 		// MinHeight(0): a text area is otherwise three lines high at least.
@@ -477,6 +503,9 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 			})
 		if editing {
 			value.AutoFocus()
+		}
+		if value.Changed() {
+			f.typed = true
 		}
 		ui.Row(c).AlignItems(ui.Center).Gap(t.Space(3)).Shrink(0).Children(func() {
 			ui.Text(c, "Mask").FontSize(t.FontSize - 1).TextColor(t.TextMuted)
@@ -517,7 +546,8 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 			f.from = key
 		}
 	}
-	write := !editing || f.value != f.was
+	// Emptied, a hidden value is saved empty; left alone, it is kept.
+	write := !editing || f.typed && (f.value != f.was || f.was == "")
 	if err == nil && write {
 		err = a.vaults.SetEnv(name, key, []byte(f.value))
 	}
@@ -526,6 +556,8 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 	}
 	if err != nil {
 		a.view.toast = err.Error()
+		// The list, renamed already, so that the row stays to try again.
+		a.refresh()
 		return
 	}
 	if write && a.view.revealed != nil {

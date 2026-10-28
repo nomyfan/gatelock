@@ -221,7 +221,13 @@ func TestTTLSharesOneAuthorizationUntilItExpires(t *testing.T) {
 	if n := auth.confirms.Load(); n != 1 {
 		t.Fatalf("confirms %d, want 1", n)
 	}
+	if vt, _ := v.Vault("dev"); !vt.Unlocked || vt.Expires.IsZero() {
+		t.Fatalf("unlocked %v until %v", vt.Unlocked, vt.Expires)
+	}
 	time.Sleep(1100 * time.Millisecond)
+	if vt, _ := v.Vault("dev"); vt.Unlocked {
+		t.Fatal("unlocked past its expiry")
+	}
 	v.Resolve(context.Background(), "dev", "test")
 	if n := auth.confirms.Load(); n != 2 {
 		t.Fatalf("after expiry confirms %d, want 2", n)
@@ -232,12 +238,21 @@ func TestSessionLastsUntilLocked(t *testing.T) {
 	auth := &fakeAuth{}
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, auth)
 	v.Create("dev", []byte("pw"), true, Policy{Mode: Session})
+	if vt, _ := v.Vault("dev"); vt.Unlocked {
+		t.Fatal("unlocked before any Resolve")
+	}
 	v.Resolve(context.Background(), "dev", "test")
 	v.Resolve(context.Background(), "dev", "test")
 	if n := auth.confirms.Load(); n != 1 {
 		t.Fatalf("confirms %d, want 1", n)
 	}
+	if vt, _ := v.Vault("dev"); !vt.Unlocked || !vt.Expires.IsZero() {
+		t.Fatalf("unlocked %v until %v", vt.Unlocked, vt.Expires)
+	}
 	v.LockAll()
+	if vt, _ := v.Vault("dev"); vt.Unlocked {
+		t.Fatal("unlocked after LockAll")
+	}
 	v.Resolve(context.Background(), "dev", "test")
 	if n := auth.confirms.Load(); n != 2 {
 		t.Fatalf("after lock confirms %d, want 2", n)

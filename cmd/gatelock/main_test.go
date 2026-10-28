@@ -34,6 +34,29 @@ func (denyAll) AskPassphrase(context.Context, string, string, bool) ([]byte, err
 	return nil, vault.ErrDenied
 }
 
+// allowAll approves, and gives testApp's passphrase.
+type allowAll struct{}
+
+func (allowAll) ConfirmUser(context.Context, string) error { return nil }
+func (allowAll) AskPassphrase(context.Context, string, string, bool) ([]byte, error) {
+	return []byte("pw"), nil
+}
+
+// unlock unlocks a's vault name, through a store over the same directory
+// that approves, which a then uses.
+func unlock(t *testing.T, a *app, name string) {
+	t.Helper()
+	v, err := vault.Open(filepath.Join(a.home, "vaults"), memKeychain{}, allowAll{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Resolve(context.Background(), name, "test"); err != nil {
+		t.Fatal(err)
+	}
+	a.vaults = v
+	a.refresh()
+}
+
 // testApp is an app over a store with a vault, and a record of activities.
 func testApp(t *testing.T) *app {
 	t.Helper()
@@ -183,9 +206,72 @@ func TestSetEnvReplacesInEnviron(t *testing.T) {
 	}
 }
 
+// The lock button locks only an unlocked vault, and shows which it is.
+func TestLockButtonFollowsUnlock(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageVault("prod-api")
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if _, ok := tt.Find("Locked"); !ok {
+		t.Fatalf("not shown locked: %q", tt.Texts())
+	}
+	unlock(t, a, "prod-api")
+	tt.Frame()
+	if err := tt.Click("Lock Now"); err != nil {
+		t.Fatal(err)
+	}
+	if vt, _ := a.vaults.Vault("prod-api"); vt.Unlocked {
+		t.Fatal("still unlocked")
+	}
+	if _, ok := tt.Find("Locked"); !ok {
+		t.Fatalf("not shown locked again: %q", tt.Texts())
+	}
+}
+
+// Under Every, which never keeps a vault unlocked, values shown still
+// show it open, and Lock Now hides them.
+func TestLockNowHidesValuesUnderEvery(t *testing.T) {
+	a := testApp(t)
+	a.vaults.SetPolicy("prod-api", vault.Policy{Mode: vault.Every})
+	a.view.page = pageVault("prod-api")
+	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"PORT": "5432", "STRIPE_KEY": "sk_live_1"}
+	a.refresh()
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if err := tt.Click("Lock Now"); err != nil {
+		t.Fatalf("%v: %q", err, tt.Texts())
+	}
+	if a.view.revealed != nil || tt.HasText("sk_live_1") {
+		t.Fatal("values still shown")
+	}
+	if _, ok := tt.Find("Locked"); !ok {
+		t.Fatalf("not shown locked: %q", tt.Texts())
+	}
+}
+
+// As an unlock with a TTL ends, the app refreshes to show it locked, and
+// hides the values shown.
+func TestRefreshAsUnlockExpires(t *testing.T) {
+	a := testApp(t)
+	a.vaults.SetPolicy("prod-api", vault.Policy{Mode: vault.TTL, TTL: time.Second})
+	unlock(t, a, "prod-api")
+	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"PORT": "5432", "STRIPE_KEY": "sk_live_1"}
+	if a.expiresAt.IsZero() {
+		t.Fatal("no refresh set for the expiry")
+	}
+	a.dirty.Store(false)
+	time.Sleep(1100 * time.Millisecond)
+	if !a.dirty.Load() {
+		t.Fatal("no refresh as the unlock ended")
+	}
+	a.refresh()
+	if a.view.vaults[0].Unlocked || !a.expiresAt.IsZero() || a.view.revealed != nil {
+		t.Fatalf("unlocked %v, refresh at %v, shown %v", a.view.vaults[0].Unlocked, a.expiresAt, a.view.revealed)
+	}
+}
+
 func TestLockHidesValuesShownAndUnderWay(t *testing.T) {
 	a := testApp(t)
 	a.view.page, a.view.revealedVault = pageVault("prod-api"), "prod-api"
+	unlock(t, a, "prod-api")
 	a.view.revealed = map[string]string{"STRIPE_KEY": "sk_live_1"}
 	tt := ui.NewTester(a.mainView, 960, 640)
 	if !tt.HasText("sk_live_1") {
@@ -213,6 +299,7 @@ func TestCopyShowsOnlyWithTheValue(t *testing.T) {
 	if _, ok := tt.Find("Copy the value of PORT"); ok {
 		t.Fatal("copy offered for a hidden value")
 	}
+	unlock(t, a, "prod-api")
 	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"STRIPE_KEY": "sk_live_1", "PORT": "5432"}
 	tt.Frame()
 	// Not clicked: the clipboard is the system's, and needs the running app.
@@ -298,7 +385,8 @@ func TestAddEnvLeftWithEscape(t *testing.T) {
 func TestAddMultilineEnv(t *testing.T) {
 	a := testApp(t)
 	a.view.page = pageVault("prod-api")
-	// As if shown, so that the value added shows as stored.
+	// As if shown, which unlocks, so that the value added shows as stored.
+	unlock(t, a, "prod-api")
 	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{}
 	tt := ui.NewTester(a.mainView, 960, 640)
 	tt.Click("Add Env…")
@@ -322,6 +410,7 @@ func TestAddMultilineEnv(t *testing.T) {
 func TestEditEnvInline(t *testing.T) {
 	a := testApp(t)
 	a.view.page = pageVault("prod-api")
+	unlock(t, a, "prod-api")
 	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"PORT": "5432", "STRIPE_KEY": "sk_live_1"}
 	tt := ui.NewTester(a.mainView, 960, 640)
 	tt.Click("Edit") // PORT's, the first
@@ -363,6 +452,25 @@ func TestRenameEnvInline(t *testing.T) {
 	tt.Key(0, ui.KeyEnter)
 	vt, _ := a.vaults.Vault("prod-api")
 	if a.view.form.open || len(vt.Envs) != 2 || vt.Envs[0].Key != "DB_PORT" || !vt.Envs[0].UpdatedAt.Equal(before.Envs[0].UpdatedAt) {
+		t.Fatalf("open %v, envs %+v", a.view.form.open, vt.Envs)
+	}
+}
+
+// A hidden value typed in and emptied again is saved empty, not kept.
+func TestEmptyHiddenValue(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageVault("prod-api")
+	before, _ := a.vaults.Vault("prod-api")
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("Edit") // PORT's, the first
+	tt.Type("x")
+	tt.Key(0, ui.KeyBackspace)
+	if a.view.form.value != "" || !a.view.form.typed {
+		t.Fatalf("form %+v", a.view.form)
+	}
+	tt.Key(0, ui.KeyEnter)
+	vt, _ := a.vaults.Vault("prod-api")
+	if a.view.form.open || !vt.Envs[0].UpdatedAt.After(before.Envs[0].UpdatedAt) {
 		t.Fatalf("open %v, envs %+v", a.view.form.open, vt.Envs)
 	}
 }

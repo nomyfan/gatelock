@@ -66,6 +66,7 @@ func icon(shapes string) *ui.SVG {
 var (
 	blankIcon      = icon(``)
 	lockIcon       = icon(`<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>`)
+	unlockIcon     = icon(`<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 4.85-.85"/>`)
 	activitiesIcon = icon(`<path d="M1.5 8.5h2.5l2-5 4 9 2-4h2.5"/>`)
 	setupIcon      = icon(`<path d="M6 1.5v3M10 1.5v3M4 4.5h8V7a4 4 0 0 1-8 0zM8 11v3.5"/>`)
 	plusIcon       = icon(`<path d="M8 3v10M3 8h10"/>`)

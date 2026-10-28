@@ -38,6 +38,10 @@ type app struct {
 	// dirty is set as the vaults or the activities change, for the next
 	// refresh.
 	dirty atomic.Bool
+	// expiry refreshes as the first unlock with a TTL ends, at expiresAt,
+	// which changes nothing the store would report.
+	expiry    *time.Timer
+	expiresAt time.Time
 
 	view viewState
 }
@@ -158,6 +162,26 @@ func (a *app) refreshLoop() {
 func (a *app) refresh() {
 	v := &a.view
 	v.vaults = a.vaults.Vaults()
+	var next time.Time
+	for _, vt := range v.vaults {
+		// Locked, by its TTL or otherwise, the vault's values shown hide,
+		// as with Lock Now. Under Every it is never kept unlocked.
+		if vt.Name == v.revealedVault && v.revealed != nil && !vt.Unlocked && vt.Policy.Mode != vault.Every {
+			a.hideValues()
+		}
+		if vt.Unlocked && !vt.Expires.IsZero() && (next.IsZero() || vt.Expires.Before(next)) {
+			next = vt.Expires
+		}
+	}
+	if !next.Equal(a.expiresAt) {
+		if a.expiry != nil {
+			a.expiry.Stop()
+		}
+		a.expiry, a.expiresAt = nil, next
+		if !next.IsZero() {
+			a.expiry = time.AfterFunc(time.Until(next), func() { a.dirty.Store(true) })
+		}
+	}
 	v.activities = a.history.List()
 	running := a.history.Running()
 	if running != v.running && a.tray != nil {
