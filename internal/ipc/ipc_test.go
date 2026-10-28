@@ -173,7 +173,8 @@ func TestRun(t *testing.T) {
 		t.Fatalf("stdout %q", stdout)
 	}
 	r := waitFor(t, a.history, history.Exited)
-	if r.ExitCode != 4 || r.Vault != "prod" || r.PGID == 0 {
+	// The CLI here is the test, run by go test at least.
+	if r.ExitCode != 4 || r.Vault != "prod" || r.PGID == 0 || r.Caller == "" {
 		t.Fatalf("activity %+v", r)
 	}
 	if out, _ := a.history.Output(r.ID); string(out) != "token=[REDACTED:prod/TOKEN]\n" {
@@ -343,4 +344,34 @@ func TestStopWhileAuthorizing(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	waitFor(t, a.history, history.Stopped)
+}
+
+func TestPeer(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "gl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	l, err := Listen(filepath.Join(dir, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	cc, err := net.Dial("unix", filepath.Join(dir, "s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	sc, err := l.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pid, ok := peer(sc); !ok || pid != os.Getpid() {
+		t.Fatalf("peer: %d, %v", pid, ok)
+	}
+	// Closed before it is looked at, as breaking connections can.
+	sc.Close()
+	if _, ok := peer(sc); ok {
+		t.Fatal("a closed connection's peer passed")
+	}
 }

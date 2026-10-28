@@ -13,6 +13,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"gatelock/internal/caller"
 	"gatelock/internal/history"
 	"gatelock/internal/vault"
 )
@@ -76,11 +77,11 @@ func testApp(t *testing.T) *app {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec, _ := h.Begin("prod-api", []string{"npm", "run", "deploy"}, "/work/api", func() {})
+	rec, _ := h.Begin("prod-api", []string{"npm", "run", "deploy"}, "/work/api", caller.Codex, func() {})
 	rec.Authorized()
 	rec.Write([]byte("deploying with [REDACTED:prod-api/STRIPE_KEY]\n"))
 	rec.Exited(0)
-	running, _ := h.Begin("prod-api", []string{"npm", "run", "dev"}, "/work/api", func() {})
+	running, _ := h.Begin("prod-api", []string{"npm", "run", "dev"}, "/work/api", caller.ClaudeCode, func() {})
 	running.Authorized()
 
 	a := &app{home: dir, vaults: v, history: h}
@@ -112,7 +113,8 @@ func TestPagesInBothAppearances(t *testing.T) {
 		tt.Frame()
 		kind := map[bool]string{false: "light", true: "dark"}[dark]
 
-		if !tt.HasText("npm run dev") || !tt.HasText("npm run deploy") || tt.HasText("exit 0") {
+		if !tt.HasText("npm run dev") || !tt.HasText("npm run deploy") || tt.HasText("exit 0") ||
+			!tt.HasText("Claude Code  ·  prod-api  ·  /work/api") {
 			t.Fatalf("%s activities page: %q", kind, tt.Texts())
 		}
 		if err := tt.Click("npm run deploy"); err != nil {
@@ -170,7 +172,7 @@ func TestAddEnv(t *testing.T) {
 func TestStopFromActivitiesPage(t *testing.T) {
 	a := testApp(t)
 	stopped := false
-	rec, _ := a.history.Begin("prod-api", []string{"sleep", "60"}, "/", func() { stopped = true })
+	rec, _ := a.history.Begin("prod-api", []string{"sleep", "60"}, "/", "", func() { stopped = true })
 	rec.Authorized()
 	a.refresh()
 	tt := ui.NewTester(a.mainView, 960, 640)

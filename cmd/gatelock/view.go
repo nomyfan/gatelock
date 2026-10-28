@@ -1140,7 +1140,16 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 			statusDot(c, r)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(t.Space(0.5)).Children(func() {
 				ui.Text(c, strings.Join(r.Argv, " ")).Font("monospace").SingleLine().Tooltip(strings.Join(r.Argv, " "))
-				ui.Text(c, r.Vault+"  ·  "+r.Cwd).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
+				ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(t.Space(1)).Children(func() {
+					about := r.Vault + "  ·  " + r.Cwd
+					if r.Caller != "" {
+						if mark, ok := agentMarks[r.Caller]; ok {
+							ui.Image(c, mark).Size(12, 12).Shrink(0)
+						}
+						about = r.Caller + "  ·  " + about
+					}
+					ui.Text(c, about).MinWidth(0).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
+				})
 			})
 			if note := statusNote(r); note != "" {
 				ui.Text(c, note).FontSize(t.FontSize - 1).FontWeight(600).TextColor(statusColor(t, r)).SingleLine()

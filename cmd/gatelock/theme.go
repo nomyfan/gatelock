@@ -1,6 +1,12 @@
 package main
 
-import "github.com/egoist/mygo/ui"
+import (
+	_ "embed"
+
+	"github.com/egoist/mygo/ui"
+
+	"gatelock/internal/caller"
+)
 
 // The app's colors are Vellum's: a warm theme in a light and a dark
 // kind.
@@ -83,6 +89,20 @@ var (
 	checkIcon      = icon(`<path d="M3 8.5l3.5 3.5L13 4.5"/>`)
 	closeIcon      = icon(`<path d="M4 4l8 8M12 4l-8 8"/>`)
 )
+
+var (
+	//go:embed icons/agents/claude.svg
+	claudeMark []byte
+	//go:embed icons/agents/codex.svg
+	codexMark []byte
+)
+
+// agentMarks are the agents' own marks in their own colors, by the names
+// internal/caller gives them.
+var agentMarks = map[string]*ui.SVG{
+	caller.ClaudeCode: ui.MustParseSVG(claudeMark),
+	caller.Codex:      ui.MustParseSVG(codexMark),
+}
 
 // primaryButton is a PrimaryButton as tall as the other controls, which
 // its lack of a border would otherwise make 2 shorter.

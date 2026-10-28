@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"gatelock/internal/caller"
 	"gatelock/internal/history"
 	"gatelock/internal/vault"
 )
@@ -124,7 +125,8 @@ func Listen(path string) (net.Listener, error) {
 // Serve handles the runs asked for on l until it is closed. It is the
 // boundary where requests are checked: the peer must be this user, the
 // vault must exist, the command must not be empty, and the directory
-// must be an absolute path that exists.
+// must be an absolute path that exists. The activity is recorded with
+// the program that ran the peer, as its processes say.
 func Serve(l net.Listener, v *vault.Store, h *history.Store) error {
 	for {
 		c, err := l.Accept()
@@ -140,9 +142,13 @@ func Serve(l net.Listener, v *vault.Store, h *history.Store) error {
 
 func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 	defer nc.Close()
-	if !sameUser(nc) {
+	pid, ok := peer(nc)
+	if !ok {
 		return
 	}
+	// Read while the peer is surely alive and the processes above it are
+	// as they were.
+	by := caller.Of(pid)
 	c := newConn(nc)
 	req, err := c.read()
 	if err != nil || req.Type != "run" {
@@ -162,7 +168,7 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var mu sync.Mutex
 	granted, stopped := false, false
-	rec, err := h.Begin(req.Vault, req.Argv, req.Cwd, func() {
+	rec, err := h.Begin(req.Vault, req.Argv, req.Cwd, by, func() {
 		mu.Lock()
 		defer mu.Unlock()
 		if granted {
@@ -193,6 +199,9 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 	}()
 
 	reason := fmt.Sprintf("unlock %s to run %s", req.Vault, strings.Join(req.Argv, " "))
+	if by != "" {
+		reason = fmt.Sprintf("unlock %s for %s to run %s", req.Vault, by, strings.Join(req.Argv, " "))
+	}
 	secrets, err := v.Resolve(ctx, req.Vault, reason)
 	mu.Lock()
 	switch {
@@ -279,16 +288,27 @@ func killGroup(pgid int) {
 	syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
-func sameUser(c net.Conn) bool {
+// peer returns the pid of the process at the other end of c, and whether
+// it is this user's.
+func peer(c net.Conn) (pid int, ok bool) {
 	raw, err := c.(*net.UnixConn).SyscallConn()
 	if err != nil {
-		return false
+		return 0, false
 	}
 	var cred *unix.Xucred
-	raw.Control(func(fd uintptr) {
-		cred, err = unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
+	var credErr, pidErr error
+	// Control does not call back on a connection already closed.
+	err = raw.Control(func(fd uintptr) {
+		cred, credErr = unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
+		pid, pidErr = unix.GetsockoptInt(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERPID)
 	})
-	return err == nil && int(cred.Uid) == os.Getuid()
+	if err != nil || credErr != nil || int(cred.Uid) != os.Getuid() {
+		return 0, false
+	}
+	if pidErr != nil {
+		pid = 0
+	}
+	return pid, true
 }
 
 // RunRequest is what `gatelock run` asks for.

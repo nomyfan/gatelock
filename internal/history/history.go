@@ -46,6 +46,9 @@ type Activity struct {
 	ExitCode  int       `json:"exit_code"`
 	// Truncated is set once the beginning of the output was dropped.
 	Truncated bool `json:"truncated,omitempty"`
+	// Caller names the program that ran it, if known: a hint, as a
+	// program can pass for another.
+	Caller string `json:"caller,omitempty"`
 }
 
 const (
@@ -112,14 +115,16 @@ func Open(dir string, onChange func()) (*Store, error) {
 	return s, nil
 }
 
-// Begin records a command's activity, waiting to be authorized. stop
-// asks the command to stop.
-func (s *Store) Begin(vault string, argv []string, cwd string, stop func()) (*Record, error) {
+// Begin records a command's activity, waiting to be authorized. caller
+// names the program that ran it, or is empty; stop asks the command to
+// stop.
+func (s *Store) Begin(vault string, argv []string, cwd, caller string, stop func()) (*Record, error) {
 	r := &Activity{
 		ID:        newID(),
 		Vault:     vault,
 		Argv:      argv,
 		Cwd:       cwd,
+		Caller:    caller,
 		StartedAt: time.Now().UTC(),
 		Status:    Authorizing,
 	}
