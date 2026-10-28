@@ -2,8 +2,8 @@ package main
 
 import "github.com/egoist/mygo/ui"
 
-// The app's colors are Vellum's, as Mux has them: a warm theme in a light
-// and a dark kind.
+// The app's colors are Vellum's: a warm theme in a light and a dark
+// kind.
 var lightTheme, darkTheme = func() (light, dark *ui.Theme) {
 	light = ui.LightTheme()
 	light.Background = ui.Hex("#faf8f5")
@@ -64,24 +64,24 @@ func icon(shapes string) *ui.SVG {
 }
 
 var (
-	blankIcon    = icon(``)
-	lockIcon     = icon(`<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>`)
-	runsIcon     = icon(`<path d="M1.5 8.5h2.5l2-5 4 9 2-4h2.5"/>`)
-	setupIcon    = icon(`<path d="M6 1.5v3M10 1.5v3M4 4.5h8V7a4 4 0 0 1-8 0zM8 11v3.5"/>`)
-	plusIcon     = icon(`<path d="M8 3v10M3 8h10"/>`)
-	eyeIcon      = icon(`<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>`)
-	eyeOffIcon   = icon(`<path d="M2 2l12 12M6.6 6.6a2 2 0 0 0 2.8 2.8M4.2 4.4C2.5 5.6 1.5 8 1.5 8s2.4 4.5 6.5 4.5c1.3 0 2.4-.4 3.3-1M7 3.6c.3 0 .7-.1 1-.1 4.1 0 6.5 4.5 6.5 4.5s-.5 1-1.5 2.1"/>`)
-	editIcon     = icon(`<path d="M10.5 2.5l3 3L6 13H3v-3z"/>`)
-	trashIcon    = icon(`<path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4"/>`)
-	settingsIcon = icon(`<path d="M2 4h7M12 4h2M2 12h2M7 12h7M2 8h4M9 8h5"/><circle cx="10.5" cy="4" r="1.5"/><circle cx="5.5" cy="12" r="1.5"/><circle cx="7.5" cy="8" r="1.5"/>`)
-	copyIcon     = icon(`<rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V3.5A1 1 0 0 0 10 2.5H3.5a1 1 0 0 0-1 1V10a1 1 0 0 0 1 1H5"/>`)
-	importIcon   = icon(`<path d="M8 2v8M5 7l3 3 3-3M3 11.5V13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1.5"/>`)
-	exportIcon   = icon(`<path d="M8 10V2M5 5l3-3 3 3M3 11.5V13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1.5"/>`)
-	stopIcon     = icon(`<rect x="4" y="4" width="8" height="8" rx="1"/>`)
-	sidebarIcon  = icon(`<rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/>`)
-	chevronIcon  = icon(`<path d="M6 3.5L10.5 8 6 12.5"/>`)
-	checkIcon    = icon(`<path d="M3 8.5l3.5 3.5L13 4.5"/>`)
-	closeIcon    = icon(`<path d="M4 4l8 8M12 4l-8 8"/>`)
+	blankIcon      = icon(``)
+	lockIcon       = icon(`<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>`)
+	activitiesIcon = icon(`<path d="M1.5 8.5h2.5l2-5 4 9 2-4h2.5"/>`)
+	setupIcon      = icon(`<path d="M6 1.5v3M10 1.5v3M4 4.5h8V7a4 4 0 0 1-8 0zM8 11v3.5"/>`)
+	plusIcon       = icon(`<path d="M8 3v10M3 8h10"/>`)
+	eyeIcon        = icon(`<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>`)
+	eyeOffIcon     = icon(`<path d="M2 2l12 12M6.6 6.6a2 2 0 0 0 2.8 2.8M4.2 4.4C2.5 5.6 1.5 8 1.5 8s2.4 4.5 6.5 4.5c1.3 0 2.4-.4 3.3-1M7 3.6c.3 0 .7-.1 1-.1 4.1 0 6.5 4.5 6.5 4.5s-.5 1-1.5 2.1"/>`)
+	editIcon       = icon(`<path d="M10.5 2.5l3 3L6 13H3v-3z"/>`)
+	trashIcon      = icon(`<path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4"/>`)
+	settingsIcon   = icon(`<path d="M2 4h7M12 4h2M2 12h2M7 12h7M2 8h4M9 8h5"/><circle cx="10.5" cy="4" r="1.5"/><circle cx="5.5" cy="12" r="1.5"/><circle cx="7.5" cy="8" r="1.5"/>`)
+	copyIcon       = icon(`<rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V3.5A1 1 0 0 0 10 2.5H3.5a1 1 0 0 0-1 1V10a1 1 0 0 0 1 1H5"/>`)
+	importIcon     = icon(`<path d="M8 2v8M5 7l3 3 3-3M3 11.5V13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1.5"/>`)
+	exportIcon     = icon(`<path d="M8 10V2M5 5l3-3 3 3M3 11.5V13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1.5"/>`)
+	stopIcon       = icon(`<rect x="4" y="4" width="8" height="8" rx="1"/>`)
+	sidebarIcon    = icon(`<rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/>`)
+	chevronIcon    = icon(`<path d="M6 3.5L10.5 8 6 12.5"/>`)
+	checkIcon      = icon(`<path d="M3 8.5l3.5 3.5L13 4.5"/>`)
+	closeIcon      = icon(`<path d="M4 4l8 8M12 4l-8 8"/>`)
 )
 
 // primaryButton is a PrimaryButton as tall as the other controls, which

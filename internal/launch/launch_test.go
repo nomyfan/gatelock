@@ -41,7 +41,7 @@ func TestRunsWithEnvCwdAndStdin(t *testing.T) {
 		Argv:   sh(`echo "token=$TOKEN"; pwd -P; cat; echo oops >&2`),
 		Cwd:    dir,
 		Env:    []string{"TOKEN=sk_live_123", "PATH=/usr/bin:/bin"},
-		Redact: []redact.Secret{{Label: "ns/TOKEN", Value: []byte("sk_live_123")}},
+		Redact: []redact.Secret{{Label: "dev/TOKEN", Value: []byte("sk_live_123")}},
 		Stdin:  strings.NewReader("from stdin\n"),
 		Stdout: &stdout,
 		Stderr: &stderr,
@@ -51,7 +51,7 @@ func TestRunsWithEnvCwdAndStdin(t *testing.T) {
 		t.Fatalf("code %d, err %v", code, err)
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "token=[REDACTED:ns/TOKEN]\n") || strings.Contains(out, "sk_live") {
+	if !strings.Contains(out, "token=[REDACTED:dev/TOKEN]\n") || strings.Contains(out, "sk_live") {
 		t.Errorf("stdout not masked: %q", out)
 	}
 	if !strings.Contains(out, "from stdin\n") {
@@ -64,7 +64,7 @@ func TestRunsWithEnvCwdAndStdin(t *testing.T) {
 	if stderr.String() != "oops\n" {
 		t.Errorf("stderr: %q", stderr.String())
 	}
-	if rec := record.String(); !strings.Contains(rec, "[REDACTED:ns/TOKEN]") || !strings.Contains(rec, "oops") || strings.Contains(rec, "sk_live") {
+	if rec := record.String(); !strings.Contains(rec, "[REDACTED:dev/TOKEN]") || !strings.Contains(rec, "oops") || strings.Contains(rec, "sk_live") {
 		t.Errorf("record: %q", rec)
 	}
 }

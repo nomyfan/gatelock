@@ -34,11 +34,11 @@ func (denyAll) AskPassphrase(context.Context, string, string, bool) ([]byte, err
 	return nil, vault.ErrDenied
 }
 
-// testApp is an app over a vault with a namespace, and a record of runs.
+// testApp is an app over a store with a vault, and a record of activities.
 func testApp(t *testing.T) *app {
 	t.Helper()
 	dir := t.TempDir()
-	v, err := vault.Open(filepath.Join(dir, "namespaces"), memKeychain{}, denyAll{})
+	v, err := vault.Open(filepath.Join(dir, "vaults"), memKeychain{}, denyAll{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func testApp(t *testing.T) *app {
 	v.SetEnv("prod-api", "STRIPE_KEY", []byte("sk_live_1"))
 	v.SetEnv("prod-api", "PORT", []byte("5432"))
 	v.SetSensitive("prod-api", "PORT", false)
-	h, err := history.Open(filepath.Join(dir, "runs"), func() {})
+	h, err := history.Open(filepath.Join(dir, "activities"), func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +59,8 @@ func testApp(t *testing.T) *app {
 	running, _ := h.Begin("prod-api", []string{"npm", "run", "dev"}, "/work/api", func() {})
 	running.Authorized()
 
-	a := &app{home: dir, vault: v, history: h}
-	a.view.page = pageRuns
+	a := &app{home: dir, vaults: v, history: h}
+	a.view.page = pageActivities
 	a.refresh()
 	return a
 }
@@ -89,7 +89,7 @@ func TestPagesInBothAppearances(t *testing.T) {
 		kind := map[bool]string{false: "light", true: "dark"}[dark]
 
 		if !tt.HasText("npm run dev") || !tt.HasText("npm run deploy") || tt.HasText("exit 0") {
-			t.Fatalf("%s runs page: %q", kind, tt.Texts())
+			t.Fatalf("%s activities page: %q", kind, tt.Texts())
 		}
 		if err := tt.Click("npm run deploy"); err != nil {
 			t.Fatal(err)
@@ -97,15 +97,15 @@ func TestPagesInBothAppearances(t *testing.T) {
 		if !tt.HasText("deploying with [REDACTED:prod-api/STRIPE_KEY]") {
 			t.Errorf("%s: output not shown: %q", kind, tt.Texts())
 		}
-		snapshot(t, tt, "runs-"+kind)
+		snapshot(t, tt, "activities-"+kind)
 
 		if err := tt.Click("prod-api"); err != nil {
 			t.Fatal(err)
 		}
 		if !tt.HasText("STRIPE_KEY") || !tt.HasText("PORT") || tt.HasText("sk_live_1") {
-			t.Errorf("%s namespace page: %q", kind, tt.Texts())
+			t.Errorf("%s vault page: %q", kind, tt.Texts())
 		}
-		snapshot(t, tt, "namespace-"+kind)
+		snapshot(t, tt, "vault-"+kind)
 
 		if err := tt.Click("Settings"); err != nil {
 			t.Fatal(err)
@@ -133,9 +133,9 @@ func TestAddEnv(t *testing.T) {
 	if a.view.form.open {
 		t.Fatal("the new row is still there")
 	}
-	ns, _ := a.vault.Namespace("prod-api")
+	vt, _ := a.vaults.Vault("prod-api")
 	var keys []string
-	for _, e := range ns.Envs {
+	for _, e := range vt.Envs {
 		keys = append(keys, e.Key)
 	}
 	if strings.Join(keys, ",") != "NEW_TOKEN,PORT,STRIPE_KEY" || !tt.HasText("NEW_TOKEN") {
@@ -143,7 +143,7 @@ func TestAddEnv(t *testing.T) {
 	}
 }
 
-func TestStopFromRunsPage(t *testing.T) {
+func TestStopFromActivitiesPage(t *testing.T) {
 	a := testApp(t)
 	stopped := false
 	rec, _ := a.history.Begin("prod-api", []string{"sleep", "60"}, "/", func() { stopped = true })
@@ -156,12 +156,12 @@ func TestStopFromRunsPage(t *testing.T) {
 	if !stopped {
 		t.Fatal("stop not asked")
 	}
-	if len(a.view.runViews) != 0 {
-		t.Fatal("stopping opened the run too")
+	if len(a.view.activityViews) != 0 {
+		t.Fatal("stopping opened the activity too")
 	}
 }
 
-func TestRunsOpenAndCloseOnTheirOwn(t *testing.T) {
+func TestActivitiesOpenAndCloseOnTheirOwn(t *testing.T) {
 	a := testApp(t)
 	tt := ui.NewTester(a.mainView, 960, 640)
 	tt.Click("npm run deploy")
@@ -185,7 +185,7 @@ func TestSetEnvReplacesInEnviron(t *testing.T) {
 
 func TestLockHidesValuesShownAndUnderWay(t *testing.T) {
 	a := testApp(t)
-	a.view.page, a.view.revealedNS = nsPage("prod-api"), "prod-api"
+	a.view.page, a.view.revealedVault = pageVault("prod-api"), "prod-api"
 	a.view.revealed = map[string]string{"STRIPE_KEY": "sk_live_1"}
 	tt := ui.NewTester(a.mainView, 960, 640)
 	if !tt.HasText("sk_live_1") {
@@ -204,12 +204,12 @@ func TestLockHidesValuesShownAndUnderWay(t *testing.T) {
 
 func TestCopyShowsOnlyWithTheValue(t *testing.T) {
 	a := testApp(t)
-	a.view.page = nsPage("prod-api")
+	a.view.page = pageVault("prod-api")
 	tt := ui.NewTester(a.mainView, 960, 640)
 	if _, ok := tt.Find("Copy Value"); ok {
 		t.Fatal("copy offered for a hidden value")
 	}
-	a.view.revealedNS, a.view.revealed = "prod-api", map[string]string{"STRIPE_KEY": "sk_live_1", "PORT": "5432"}
+	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"STRIPE_KEY": "sk_live_1", "PORT": "5432"}
 	tt.Frame()
 	// Not clicked: the clipboard is the system's, and needs the running app.
 	if _, ok := tt.Find("Copy Value"); !ok {
@@ -241,8 +241,8 @@ func TestClearEndedActivities(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !tt.HasText("npm run dev") || tt.HasText("npm run deploy") || len(a.view.runViews) != 0 {
-		t.Fatalf("texts %q, views %v", tt.Texts(), a.view.runViews)
+	if !tt.HasText("npm run dev") || tt.HasText("npm run deploy") || len(a.view.activityViews) != 0 {
+		t.Fatalf("texts %q, views %v", tt.Texts(), a.view.activityViews)
 	}
 	if _, ok := tt.Find("Clear Ended Activities…"); ok {
 		t.Fatal("clear shown with nothing ended")
@@ -261,29 +261,29 @@ func TestDeleteFromSidebarShowsOnHover(t *testing.T) {
 	if err := tt.Click("Delete prod-api…"); err != nil {
 		t.Fatalf("delete not shown on hover: %v", err)
 	}
-	if !a.view.deletingNS || a.view.deleteNS != "prod-api" || a.view.page != pageRuns {
-		t.Fatalf("deleting %v %q, page %q", a.view.deletingNS, a.view.deleteNS, a.view.page)
+	if !a.view.deletingVault || a.view.deleteVault != "prod-api" || a.view.page != pageActivities {
+		t.Fatalf("deleting %v %q, page %q", a.view.deletingVault, a.view.deleteVault, a.view.page)
 	}
 }
 
 func TestAddEnvLeftWithEscape(t *testing.T) {
 	a := testApp(t)
-	a.view.page = nsPage("prod-api")
+	a.view.page = pageVault("prod-api")
 	tt := ui.NewTester(a.mainView, 960, 640)
 	tt.Click("Add Env…")
 	tt.Type("DRAFT")
 	tt.Key(0, ui.KeyEscape)
-	ns, _ := a.vault.Namespace("prod-api")
-	if a.view.form.open || len(ns.Envs) != 2 {
-		t.Fatalf("adding %v, envs %v", a.view.form.open, ns.Envs)
+	vt, _ := a.vaults.Vault("prod-api")
+	if a.view.form.open || len(vt.Envs) != 2 {
+		t.Fatalf("adding %v, envs %v", a.view.form.open, vt.Envs)
 	}
 }
 
 func TestAddMultilineEnv(t *testing.T) {
 	a := testApp(t)
-	a.view.page = nsPage("prod-api")
+	a.view.page = pageVault("prod-api")
 	// As if shown, so that the value added shows as stored.
-	a.view.revealedNS, a.view.revealed = "prod-api", map[string]string{}
+	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{}
 	tt := ui.NewTester(a.mainView, 960, 640)
 	tt.Click("Add Env…")
 	tt.Type("CERT")
@@ -305,8 +305,8 @@ func TestAddMultilineEnv(t *testing.T) {
 
 func TestEditEnvInline(t *testing.T) {
 	a := testApp(t)
-	a.view.page = nsPage("prod-api")
-	a.view.revealedNS, a.view.revealed = "prod-api", map[string]string{"PORT": "5432", "STRIPE_KEY": "sk_live_1"}
+	a.view.page = pageVault("prod-api")
+	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"PORT": "5432", "STRIPE_KEY": "sk_live_1"}
 	tt := ui.NewTester(a.mainView, 960, 640)
 	tt.Click("Edit Value") // PORT's, the first
 	if f := a.view.form; !f.open || !f.editing || f.key != "PORT" || f.value != "5432" || f.mask {
@@ -318,9 +318,9 @@ func TestEditEnvInline(t *testing.T) {
 	if a.view.form.open || want == "5432" || a.view.revealed["PORT"] != want {
 		t.Fatalf("open %v, typed %q, stored %q", a.view.form.open, want, a.view.revealed["PORT"])
 	}
-	ns, _ := a.vault.Namespace("prod-api")
-	if len(ns.Envs) != 2 || ns.Envs[0].Sensitive {
-		t.Fatalf("envs %+v", ns.Envs)
+	vt, _ := a.vaults.Vault("prod-api")
+	if len(vt.Envs) != 2 || vt.Envs[0].Sensitive {
+		t.Fatalf("envs %+v", vt.Envs)
 	}
 }
 

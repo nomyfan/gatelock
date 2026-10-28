@@ -25,17 +25,18 @@ import (
 	"gatelock/internal/vault"
 )
 
-// app is the running app: the vault, the record of runs, and the state
-// its windows show, which the main thread owns.
+// app is the running app: the vaults, the record of activities, and the
+// state its windows show, which the main thread owns.
 type app struct {
 	home    string
-	vault   *vault.Vault
+	vaults  *vault.Store
 	history *history.Store
 
 	win      *mygo.Window // the main window, nil while closed
 	tray     *mygo.Tray
 	quitting bool
-	// dirty is set as the vault or the runs change, for the next refresh.
+	// dirty is set as the vaults or the activities change, for the next
+	// refresh.
 	dirty atomic.Bool
 
 	view viewState
@@ -50,10 +51,10 @@ func runApp() {
 		log.Fatal(err)
 	}
 	a := &app{home: dir}
-	if a.vault, err = vault.Open(filepath.Join(dir, "namespaces"), keychain{}, a); err != nil {
+	if a.vaults, err = vault.Open(filepath.Join(dir, "vaults"), keychain{}, a); err != nil {
 		log.Fatal(err)
 	}
-	if a.history, err = history.Open(filepath.Join(dir, "runs"), func() { a.dirty.Store(true) }); err != nil {
+	if a.history, err = history.Open(filepath.Join(dir, "activities"), func() { a.dirty.Store(true) }); err != nil {
 		log.Fatal(err)
 	}
 	l, err := ipc.Listen(socketPath(dir))
@@ -61,11 +62,11 @@ func runApp() {
 		log.Fatal(err)
 	}
 	go func() {
-		if err := ipc.Serve(l, a.vault, a.history); err != nil {
+		if err := ipc.Serve(l, a.vaults, a.history); err != nil {
 			log.Println("serve:", err)
 		}
 	}()
-	a.view.page = pageRuns
+	a.view.page = pageActivities
 	a.refresh()
 
 	mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
@@ -100,8 +101,8 @@ func (a *app) openWindow() {
 			MinWidth:  720,
 			MinHeight: 420,
 			StateKey:  "main",
-			// As Mux: the window controls sit over the sidebar, centered on
-			// the pages' headers.
+			// The window controls sit over the sidebar, centered on the
+			// pages' headers.
 			TitleBarStyle:        mygo.TitleBarHidden,
 			TrafficLightPosition: &mygo.Point{X: 18, Y: titleBand/2 - 8},
 			Content:              ui.View(a.mainView),
@@ -143,8 +144,8 @@ func (a *app) beforeQuit(e *mygo.QuitEvent) {
 	}()
 }
 
-// refreshLoop picks up changes to the vault and the runs, at most ten
-// times a second, as output may come far more often.
+// refreshLoop picks up changes to the vaults and the activities, at most
+// ten times a second, as output may come far more often.
 func (a *app) refreshLoop() {
 	for range time.Tick(100 * time.Millisecond) {
 		if a.dirty.Swap(false) {
@@ -153,17 +154,17 @@ func (a *app) refreshLoop() {
 	}
 }
 
-// refresh reads the vault and the runs anew, on the main thread.
+// refresh reads the vaults and the activities anew, on the main thread.
 func (a *app) refresh() {
 	v := &a.view
-	v.namespaces = a.vault.Namespaces()
-	v.runs = a.history.List()
+	v.vaults = a.vaults.Vaults()
+	v.activities = a.history.List()
 	running := a.history.Running()
 	if running != v.running && a.tray != nil {
 		a.tray.SetTitle(trayTitle(running))
 	}
 	v.running = running
-	for id, rv := range v.runViews {
+	for id, rv := range v.activityViews {
 		if !rv.open {
 			continue
 		}
@@ -253,12 +254,12 @@ func (a *app) ConfirmUser(ctx context.Context, reason string) error {
 }
 
 // AskPassphrase asks in a window of its own, in front of the others.
-func (a *app) AskPassphrase(ctx context.Context, ns, reason string, retry bool) ([]byte, error) {
-	p := &passphrasePrompt{namespace: ns, reason: reason, retry: retry, answer: make(chan []byte, 1)}
+func (a *app) AskPassphrase(ctx context.Context, name, reason string, retry bool) ([]byte, error) {
+	p := &passphrasePrompt{vault: name, reason: reason, retry: retry, answer: make(chan []byte, 1)}
 	var win *mygo.Window
 	mygo.RunOnMain(func() {
 		win = mygo.NewWindow(mygo.WindowOptions{
-			Title:           "Unlock " + ns,
+			Title:           "Unlock " + name,
 			Width:           440,
 			Height:          230,
 			DisableResize:   true,
@@ -282,12 +283,12 @@ func (a *app) AskPassphrase(ctx context.Context, ns, reason string, retry bool) 
 	}
 }
 
-// passphrasePrompt asks for a namespace's passphrase.
+// passphrasePrompt asks for a vault's passphrase.
 type passphrasePrompt struct {
-	namespace, reason string
-	retry             bool
-	value             string
-	answer            chan []byte // nil for no
+	vault, reason string
+	retry         bool
+	value         string
+	answer        chan []byte // nil for no
 }
 
 // give answers, once.
@@ -307,7 +308,7 @@ func (p *passphrasePrompt) view(c *ui.Context) {
 	ui.Column(c).Fill().Padding(t.Space(5)).Gap(t.Space(3)).Background(t.Background).Children(func() {
 		ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, lockIcon).Size(18, 18).TextColor(t.Accent)
-			ui.Text(c, "Unlock "+p.namespace).FontSize(t.FontSize + 3).Bold()
+			ui.Text(c, "Unlock "+p.vault).FontSize(t.FontSize + 3).Bold()
 		})
 		ui.Text(c, "Gatelock wants to "+p.reason+".").TextColor(t.TextMuted).Wrap()
 		input := ui.TextInput(c.Key("passphrase"), &p.value).Password().Placeholder("Passphrase").AutoFocus().Label("Passphrase")

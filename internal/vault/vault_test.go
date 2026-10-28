@@ -44,7 +44,7 @@ func (a *fakeAuth) ConfirmUser(ctx context.Context, reason string) error {
 	return nil
 }
 
-func (a *fakeAuth) AskPassphrase(ctx context.Context, ns, reason string, retry bool) ([]byte, error) {
+func (a *fakeAuth) AskPassphrase(ctx context.Context, vault, reason string, retry bool) ([]byte, error) {
 	a.asks.Add(1)
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -152,14 +152,14 @@ func TestCreateSetResolveWithKeychain(t *testing.T) {
 		return nil
 	})
 
-	// Reopened, the vault has the same namespace and values.
+	// Reopened, the store has the same vault and values.
 	v2, err := Open(dir, kc, auth)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ns, err := v2.Namespace("prod-api")
-	if err != nil || len(ns.Envs) != 2 || !ns.Keychain {
-		t.Fatalf("reopened: %+v, %v", ns, err)
+	vault, err := v2.Vault("prod-api")
+	if err != nil || len(vault.Envs) != 2 || !vault.Keychain {
+		t.Fatalf("reopened: %+v, %v", vault, err)
 	}
 	if secrets, err := v2.Resolve(context.Background(), "prod-api", "test"); err != nil || string(secrets[1].Value) != "sk_live_123" {
 		t.Fatalf("reopened resolve: %+v, %v", secrets, err)
@@ -168,10 +168,10 @@ func TestCreateSetResolveWithKeychain(t *testing.T) {
 
 func TestKeysDifferingInCaseAreDistinct(t *testing.T) {
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, &fakeAuth{})
-	v.Create("ns", []byte("pw"), true, Policy{Mode: Every})
-	v.SetEnv("ns", "token", []byte("lower"))
-	v.SetEnv("ns", "TOKEN", []byte("upper"))
-	secrets, err := v.Resolve(context.Background(), "ns", "test")
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
+	v.SetEnv("dev", "token", []byte("lower"))
+	v.SetEnv("dev", "TOKEN", []byte("upper"))
+	secrets, err := v.Resolve(context.Background(), "dev", "test")
 	if err != nil || len(secrets) != 2 || string(secrets[0].Value) != "upper" || string(secrets[1].Value) != "lower" {
 		t.Fatalf("got %+v, %v", secrets, err)
 	}
@@ -180,12 +180,12 @@ func TestKeysDifferingInCaseAreDistinct(t *testing.T) {
 func TestEveryAsksEachRequestEvenConcurrent(t *testing.T) {
 	auth := &fakeAuth{hold: make(chan struct{})}
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, auth)
-	v.Create("ns", []byte("pw"), true, Policy{Mode: Every})
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
 
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Go(func() {
-			if _, err := v.Resolve(context.Background(), "ns", "test"); err != nil {
+			if _, err := v.Resolve(context.Background(), "dev", "test"); err != nil {
 				t.Error(err)
 			}
 		})
@@ -205,12 +205,12 @@ func TestEveryAsksEachRequestEvenConcurrent(t *testing.T) {
 func TestTTLSharesOneAuthorizationUntilItExpires(t *testing.T) {
 	auth := &fakeAuth{hold: make(chan struct{})}
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, auth)
-	v.Create("ns", []byte("pw"), true, Policy{Mode: TTL, TTL: time.Second})
+	v.Create("dev", []byte("pw"), true, Policy{Mode: TTL, TTL: time.Second})
 
 	var wg sync.WaitGroup
 	for range 3 {
 		wg.Go(func() {
-			if _, err := v.Resolve(context.Background(), "ns", "test"); err != nil {
+			if _, err := v.Resolve(context.Background(), "dev", "test"); err != nil {
 				t.Error(err)
 			}
 		})
@@ -222,7 +222,7 @@ func TestTTLSharesOneAuthorizationUntilItExpires(t *testing.T) {
 		t.Fatalf("confirms %d, want 1", n)
 	}
 	time.Sleep(1100 * time.Millisecond)
-	v.Resolve(context.Background(), "ns", "test")
+	v.Resolve(context.Background(), "dev", "test")
 	if n := auth.confirms.Load(); n != 2 {
 		t.Fatalf("after expiry confirms %d, want 2", n)
 	}
@@ -231,20 +231,20 @@ func TestTTLSharesOneAuthorizationUntilItExpires(t *testing.T) {
 func TestSessionLastsUntilLocked(t *testing.T) {
 	auth := &fakeAuth{}
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, auth)
-	v.Create("ns", []byte("pw"), true, Policy{Mode: Session})
-	v.Resolve(context.Background(), "ns", "test")
-	v.Resolve(context.Background(), "ns", "test")
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Session})
+	v.Resolve(context.Background(), "dev", "test")
+	v.Resolve(context.Background(), "dev", "test")
 	if n := auth.confirms.Load(); n != 1 {
 		t.Fatalf("confirms %d, want 1", n)
 	}
 	v.LockAll()
-	v.Resolve(context.Background(), "ns", "test")
+	v.Resolve(context.Background(), "dev", "test")
 	if n := auth.confirms.Load(); n != 2 {
 		t.Fatalf("after lock confirms %d, want 2", n)
 	}
 	// Changing the policy locks too.
-	v.SetPolicy("ns", Policy{Mode: Session})
-	v.Resolve(context.Background(), "ns", "test")
+	v.SetPolicy("dev", Policy{Mode: Session})
+	v.Resolve(context.Background(), "dev", "test")
 	if n := auth.confirms.Load(); n != 3 {
 		t.Fatalf("after policy change confirms %d, want 3", n)
 	}
@@ -254,11 +254,11 @@ func TestWithoutKeychainAsksPassphraseUntilRight(t *testing.T) {
 	kc := &fakeKeychain{items: map[string]string{}}
 	auth := &fakeAuth{queue: []string{"wrong", "pw"}}
 	v, _ := Open(t.TempDir(), kc, auth)
-	v.Create("ns", []byte("pw"), false, Policy{Mode: Every})
+	v.Create("dev", []byte("pw"), false, Policy{Mode: Every})
 	if len(kc.items) != 0 {
 		t.Fatal("passphrase in keychain")
 	}
-	if _, err := v.Resolve(context.Background(), "ns", "test"); err != nil {
+	if _, err := v.Resolve(context.Background(), "dev", "test"); err != nil {
 		t.Fatal(err)
 	}
 	if auth.confirms.Load() != 0 || len(auth.retries) != 2 || auth.retries[0] || !auth.retries[1] {
@@ -269,8 +269,8 @@ func TestWithoutKeychainAsksPassphraseUntilRight(t *testing.T) {
 func TestDenied(t *testing.T) {
 	auth := &fakeAuth{deny: true}
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, auth)
-	v.Create("ns", []byte("pw"), true, Policy{Mode: Session})
-	if _, err := v.Resolve(context.Background(), "ns", "test"); !errors.Is(err, ErrDenied) {
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Session})
+	if _, err := v.Resolve(context.Background(), "dev", "test"); !errors.Is(err, ErrDenied) {
 		t.Fatalf("got %v", err)
 	}
 	if _, err := v.Resolve(context.Background(), "nope", "test"); !errors.Is(err, ErrNotFound) {
@@ -301,11 +301,11 @@ func TestMissingOrStaleKeychainItemIsAskedForAndRepaired(t *testing.T) {
 		kc := &fakeKeychain{items: map[string]string{}}
 		auth := &fakeAuth{pass: "pw"}
 		v, _ := Open(t.TempDir(), kc, auth)
-		v.Create("ns", []byte("pw"), true, Policy{Mode: Every})
+		v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
 		account, _ := kc.only(t)
 		spoil(kc, account)
 
-		if _, err := v.Resolve(context.Background(), "ns", "test"); err != nil {
+		if _, err := v.Resolve(context.Background(), "dev", "test"); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if auth.asks.Load() != 1 {
@@ -314,7 +314,7 @@ func TestMissingOrStaleKeychainItemIsAskedForAndRepaired(t *testing.T) {
 		if _, secret := kc.only(t); secret != "pw" {
 			t.Fatalf("%s: keychain holds %q", name, secret)
 		}
-		v.Resolve(context.Background(), "ns", "test")
+		v.Resolve(context.Background(), "dev", "test")
 		if auth.asks.Load() != 1 {
 			t.Fatalf("%s: asked again after repair", name)
 		}
@@ -325,15 +325,15 @@ func TestChangePassphraseWithKeychainFailingRecovers(t *testing.T) {
 	kc := &fakeKeychain{items: map[string]string{}}
 	auth := &fakeAuth{pass: "new"}
 	v, _ := Open(t.TempDir(), kc, auth)
-	v.Create("ns", []byte("old"), true, Policy{Mode: Every})
-	v.SetEnv("ns", "TOKEN", []byte("value"))
+	v.Create("dev", []byte("old"), true, Policy{Mode: Every})
+	v.SetEnv("dev", "TOKEN", []byte("value"))
 
 	kc.failSet = true
-	if err := v.ChangePassphrase(context.Background(), "ns", []byte("new")); !errors.Is(err, ErrKeychainStale) {
+	if err := v.ChangePassphrase(context.Background(), "dev", []byte("new")); !errors.Is(err, ErrKeychainStale) {
 		t.Fatalf("got %v", err)
 	}
 	kc.failSet = false
-	secrets, err := v.Resolve(context.Background(), "ns", "test")
+	secrets, err := v.Resolve(context.Background(), "dev", "test")
 	if err != nil || string(secrets[0].Value) != "value" {
 		t.Fatalf("got %+v, %v", secrets, err)
 	}
@@ -349,26 +349,26 @@ func TestToggleKeychain(t *testing.T) {
 	kc := &fakeKeychain{items: map[string]string{}}
 	auth := &fakeAuth{pass: "pw"}
 	v, _ := Open(t.TempDir(), kc, auth)
-	v.Create("ns", []byte("pw"), true, Policy{Mode: Every})
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
 
-	if err := v.SetKeychain(context.Background(), "ns", false); err != nil {
+	if err := v.SetKeychain(context.Background(), "dev", false); err != nil {
 		t.Fatal(err)
 	}
 	if len(kc.items) != 0 {
 		t.Fatal("keychain item left")
 	}
-	v.Resolve(context.Background(), "ns", "test")
+	v.Resolve(context.Background(), "dev", "test")
 	if auth.confirms.Load() != 0 || auth.asks.Load() != 1 {
 		t.Fatalf("off: confirms %d, asks %d", auth.confirms.Load(), auth.asks.Load())
 	}
 
-	if err := v.SetKeychain(context.Background(), "ns", true); err != nil {
+	if err := v.SetKeychain(context.Background(), "dev", true); err != nil {
 		t.Fatal(err)
 	}
 	if _, secret := kc.only(t); secret != "pw" {
 		t.Fatalf("keychain holds %q", secret)
 	}
-	v.Resolve(context.Background(), "ns", "test")
+	v.Resolve(context.Background(), "dev", "test")
 	if auth.confirms.Load() != 1 || auth.asks.Load() != 2 {
 		t.Fatalf("on: confirms %d, asks %d", auth.confirms.Load(), auth.asks.Load())
 	}
@@ -393,8 +393,8 @@ func TestRenameAndDelete(t *testing.T) {
 	if err := v2.Delete(context.Background(), "new"); err != nil {
 		t.Fatal(err)
 	}
-	if len(v2.Namespaces()) != 0 || len(kc.items) != 0 {
-		t.Fatal("namespace or keychain item left")
+	if len(v2.Vaults()) != 0 || len(kc.items) != 0 {
+		t.Fatal("vault or keychain item left")
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Fatalf("files left: %v", entries)
@@ -408,9 +408,9 @@ func TestValidation(t *testing.T) {
 			t.Errorf("name %q: %v", name, err)
 		}
 	}
-	v.Create("ns", []byte("pw"), false, Policy{Mode: Every})
+	v.Create("dev", []byte("pw"), false, Policy{Mode: Every})
 	for _, key := range []string{"", "1A", "A-B", "../X"} {
-		if err := v.SetEnv("ns", key, []byte("x")); !errors.Is(err, ErrInvalidKey) {
+		if err := v.SetEnv("dev", key, []byte("x")); !errors.Is(err, ErrInvalidKey) {
 			t.Errorf("key %q: %v", key, err)
 		}
 	}
@@ -418,20 +418,20 @@ func TestValidation(t *testing.T) {
 
 func TestImport(t *testing.T) {
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, &fakeAuth{})
-	v.Create("ns", []byte("pw"), true, Policy{Mode: Every})
-	keys, err := v.Import("ns", []byte("# comment\nexport TOKEN=\"sk live\"\nURL=postgres://u:p@h/db\n"))
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
+	keys, err := v.Import("dev", []byte("# comment\nexport TOKEN=\"sk live\"\nURL=postgres://u:p@h/db\n"))
 	if err != nil || len(keys) != 2 || keys[0] != "TOKEN" || keys[1] != "URL" {
 		t.Fatalf("got %v, %v", keys, err)
 	}
-	secrets, _ := v.Resolve(context.Background(), "ns", "test")
+	secrets, _ := v.Resolve(context.Background(), "dev", "test")
 	if string(secrets[0].Value) != "sk live" || string(secrets[1].Value) != "postgres://u:p@h/db" {
 		t.Fatalf("got %+v", secrets)
 	}
-	if _, err := v.Import("ns", []byte("GOOD=1\nBAD-KEY=2\n")); err == nil {
+	if _, err := v.Import("dev", []byte("GOOD=1\nBAD-KEY=2\n")); err == nil {
 		t.Fatal("imported an invalid key")
 	}
-	if ns, _ := v.Namespace("ns"); len(ns.Envs) != 2 {
-		t.Fatalf("a failed import set values: %+v", ns.Envs)
+	if vault, _ := v.Vault("dev"); len(vault.Envs) != 2 {
+		t.Fatalf("a failed import set values: %+v", vault.Envs)
 	}
 }
 
@@ -452,7 +452,7 @@ func TestToggleKeychainFailingToSaveLeavesBothAsTheyWere(t *testing.T) {
 	if err := v.SetKeychain(context.Background(), "on", false); err == nil {
 		t.Fatal("turning off saved")
 	}
-	if ns, _ := v.Namespace("on"); !ns.Keychain {
+	if vault, _ := v.Vault("on"); !vault.Keychain {
 		t.Fatal("meta says off")
 	}
 	if a, _ := kc.only(t); a != account {
@@ -462,7 +462,7 @@ func TestToggleKeychainFailingToSaveLeavesBothAsTheyWere(t *testing.T) {
 	if err := v.SetKeychain(context.Background(), "off", true); err == nil {
 		t.Fatal("turning on saved")
 	}
-	if ns, _ := v.Namespace("off"); ns.Keychain {
+	if vault, _ := v.Vault("off"); vault.Keychain {
 		t.Fatal("meta says on")
 	}
 	if a, _ := kc.only(t); a != account {
@@ -474,20 +474,20 @@ func TestToggleKeychainFailingToSaveLeavesBothAsTheyWere(t *testing.T) {
 // store the passphrase it is given; what removes the entry meanwhile waits
 // for it, so that the entry stays removed.
 func TestKeychainEntryStaysRemovedPastAnUnlockUnderWay(t *testing.T) {
-	for name, remove := range map[string]func(v *Vault) error{
-		"turned off": func(v *Vault) error { return v.SetKeychain(context.Background(), "ns", false) },
-		"deleted":    func(v *Vault) error { return v.Delete(context.Background(), "ns") },
+	for name, remove := range map[string]func(v *Store) error{
+		"turned off": func(v *Store) error { return v.SetKeychain(context.Background(), "dev", false) },
+		"deleted":    func(v *Store) error { return v.Delete(context.Background(), "dev") },
 	} {
 		kc := &fakeKeychain{items: map[string]string{}}
 		auth := &fakeAuth{pass: "pw", hold: make(chan struct{})}
 		v, _ := Open(t.TempDir(), kc, auth)
-		v.Create("ns", []byte("pw"), true, Policy{Mode: Every})
+		v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
 		account, _ := kc.only(t)
 		delete(kc.items, account)
 
 		unlocked := make(chan error)
 		go func() {
-			_, err := v.Resolve(context.Background(), "ns", "test")
+			_, err := v.Resolve(context.Background(), "dev", "test")
 			unlocked <- err
 		}()
 		for auth.confirms.Load() == 0 {
@@ -515,7 +515,7 @@ func TestKeychainEntryStaysRemovedPastAnUnlockUnderWay(t *testing.T) {
 
 func TestDotenvReadsBackAsItWas(t *testing.T) {
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, &fakeAuth{})
-	v.Create("ns", []byte("pw"), true, Policy{Mode: Every})
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
 	want := map[string]string{
 		"PIN":    "0123",
 		"DOLLAR": "pa$$word ${HOME} $HOME",
@@ -531,10 +531,10 @@ func TestDotenvReadsBackAsItWas(t *testing.T) {
 	for k, val := range want {
 		secrets = append(secrets, Secret{Key: k, Value: []byte(val)})
 	}
-	if _, err := v.Import("ns", Dotenv(secrets)); err != nil {
+	if _, err := v.Import("dev", Dotenv(secrets)); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := v.Resolve(context.Background(), "ns", "test")
+	got, _ := v.Resolve(context.Background(), "dev", "test")
 	if len(got) != len(want) {
 		t.Fatalf("got %d envs", len(got))
 	}

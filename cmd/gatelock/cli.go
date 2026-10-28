@@ -23,7 +23,7 @@ const (
 // bundleID is the app's identifier, as mygo.json sets it.
 const bundleID = "dev.callcc.gatelock"
 
-// runCommand is `gatelock run`: it asks the app for the namespace's values,
+// runCommand is `gatelock run`: it asks the app for the vault's values,
 // runs the command with them in its environment, masks them in its output,
 // and exits as the command does.
 func runCommand(args []string) int {
@@ -34,7 +34,7 @@ func runCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, usage)
 		return exitGatelock
 	}
-	namespace, argv := args[0], args[1:]
+	name, argv := args[0], args[1:]
 
 	fail := func(err error) int {
 		fmt.Fprintf(os.Stderr, "gatelock: %v\n", err)
@@ -52,7 +52,7 @@ func runCommand(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	session, secrets, err := ipc.Run(nc, ipc.RunRequest{Namespace: namespace, Argv: argv, Cwd: cwd})
+	session, secrets, err := ipc.Run(nc, ipc.RunRequest{Vault: name, Argv: argv, Cwd: cwd})
 	if err != nil {
 		return fail(err)
 	}
@@ -62,7 +62,7 @@ func runCommand(args []string) int {
 	for _, s := range secrets {
 		env = setEnv(env, s.Key, string(s.Value))
 		if s.Sensitive {
-			masks = append(masks, redact.Secret{Label: namespace + "/" + s.Key, Value: s.Value})
+			masks = append(masks, redact.Secret{Label: name + "/" + s.Key, Value: s.Value})
 		}
 	}
 	code, err := launch.Run(launch.Spec{

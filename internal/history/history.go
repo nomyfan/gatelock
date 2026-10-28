@@ -30,13 +30,13 @@ const (
 	Lost        Status = "lost"    // gatelock run went away before it ended
 )
 
-// Ended reports whether a run with the status is over.
+// Ended reports whether an activity with the status is over.
 func (s Status) Ended() bool { return s != Authorizing && s != Running }
 
-// Run is a command's record.
-type Run struct {
+// Activity is a command's record.
+type Activity struct {
 	ID        string    `json:"id"`
-	Namespace string    `json:"namespace"`
+	Vault     string    `json:"vault"`
 	Argv      []string  `json:"argv"`
 	Cwd       string    `json:"cwd"`
 	PGID      int       `json:"pgid,omitempty"`
@@ -49,7 +49,7 @@ type Run struct {
 }
 
 const (
-	// keep is how many runs are kept.
+	// keep is how many activities are kept.
 	keep = 200
 	// Output beyond maxOutput is cut back to its last keptOutput bytes.
 	maxOutput  = 4 << 20
@@ -61,24 +61,24 @@ type Store struct {
 	dir      string
 	onChange func()
 
-	mu      sync.Mutex
-	runs    map[string]*Run
-	records map[string]*Record // of the runs not ended
+	mu         sync.Mutex
+	activities map[string]*Activity
+	records    map[string]*Record // of the activities not ended
 }
 
-// Record is a run not ended, as it goes.
+// Record is an activity not ended, as it goes.
 type Record struct {
 	s             *Store
-	run           *Run
+	activity      *Activity
 	stop          func()
 	stopRequested bool
 	out           *os.File
 	size          int64
 }
 
-// Open opens the store kept in dir, creating it if need be. Runs left not
-// ended, by an app that quit, are marked lost. onChange is called, without
-// locks held, after every change.
+// Open opens the store kept in dir, creating it if need be. Activities
+// left not ended, by an app that quit, are marked lost. onChange is
+// called, without locks held, after every change.
 func Open(dir string, onChange func()) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -87,15 +87,15 @@ func Open(dir string, onChange func()) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, onChange: onChange, runs: map[string]*Run{}, records: map[string]*Record{}}
+	s := &Store{dir: dir, onChange: onChange, activities: map[string]*Activity{}, records: map[string]*Record{}}
 	for _, e := range entries {
 		data, err := os.ReadFile(filepath.Join(dir, e.Name(), "meta.json"))
 		if err != nil {
-			// A run removed half way, or not one at all.
+			// An activity removed half way, or not one at all.
 			os.RemoveAll(filepath.Join(dir, e.Name()))
 			continue
 		}
-		var r Run
+		var r Activity
 		if err := json.Unmarshal(data, &r); err != nil {
 			os.RemoveAll(filepath.Join(dir, e.Name()))
 			continue
@@ -106,18 +106,18 @@ func Open(dir string, onChange func()) (*Store, error) {
 				return nil, err
 			}
 		}
-		s.runs[r.ID] = &r
+		s.activities[r.ID] = &r
 	}
 	s.prune()
 	return s, nil
 }
 
-// Begin records a run of a command, waiting to be authorized. stop asks
-// the command to stop.
-func (s *Store) Begin(namespace string, argv []string, cwd string, stop func()) (*Record, error) {
-	r := &Run{
+// Begin records a command's activity, waiting to be authorized. stop
+// asks the command to stop.
+func (s *Store) Begin(vault string, argv []string, cwd string, stop func()) (*Record, error) {
+	r := &Activity{
 		ID:        newID(),
-		Namespace: namespace,
+		Vault:     vault,
 		Argv:      argv,
 		Cwd:       cwd,
 		StartedAt: time.Now().UTC(),
@@ -134,9 +134,9 @@ func (s *Store) Begin(namespace string, argv []string, cwd string, stop func()) 
 		out.Close()
 		return nil, err
 	}
-	rec := &Record{s: s, run: r, stop: stop, out: out}
+	rec := &Record{s: s, activity: r, stop: stop, out: out}
 	s.mu.Lock()
-	s.runs[r.ID] = r
+	s.activities[r.ID] = r
 	s.records[r.ID] = rec
 	s.prune()
 	s.mu.Unlock()
@@ -150,14 +150,14 @@ func newID() string {
 	return time.Now().UTC().Format("20060102T150405.000000000") + "-" + hex.EncodeToString(b)
 }
 
-// ID returns the run's id.
-func (rec *Record) ID() string { return rec.run.ID }
+// ID returns the activity's id.
+func (rec *Record) ID() string { return rec.activity.ID }
 
-// Authorized records that the run was authorized and is starting.
-func (rec *Record) Authorized() { rec.change(func(r *Run) { r.Status = Running }) }
+// Authorized records that the activity was authorized and is starting.
+func (rec *Record) Authorized() { rec.change(func(r *Activity) { r.Status = Running }) }
 
 // Started records the process group of the command.
-func (rec *Record) Started(pgid int) { rec.change(func(r *Run) { r.PGID = pgid }) }
+func (rec *Record) Started(pgid int) { rec.change(func(r *Activity) { r.PGID = pgid }) }
 
 // Write appends masked output.
 func (rec *Record) Write(p []byte) (int, error) {
@@ -165,7 +165,7 @@ func (rec *Record) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	n, err := rec.out.WriteAt(p, rec.size)
 	rec.size += int64(n)
-	var truncated *Run
+	var truncated *Activity
 	if err == nil && rec.size > maxOutput {
 		tail := make([]byte, keptOutput)
 		if _, err = rec.out.ReadAt(tail, rec.size-keptOutput); err == nil {
@@ -173,9 +173,9 @@ func (rec *Record) Write(p []byte) (int, error) {
 				_, err = rec.out.WriteAt(tail, 0)
 			}
 			rec.size = keptOutput
-			if !rec.run.Truncated {
-				rec.run.Truncated = true
-				r := *rec.run
+			if !rec.activity.Truncated {
+				rec.activity.Truncated = true
+				r := *rec.activity
 				truncated = &r
 			}
 		}
@@ -191,7 +191,7 @@ func (rec *Record) Write(p []byte) (int, error) {
 // Exited records that the command exited with code: stopped, if the user
 // had asked it to stop.
 func (rec *Record) Exited(code int) {
-	rec.end(func(r *Run) {
+	rec.end(func(r *Activity) {
 		r.Status = Exited
 		if rec.stopRequested {
 			r.Status = Stopped
@@ -200,12 +200,12 @@ func (rec *Record) Exited(code int) {
 	})
 }
 
-// End records that the run ended otherwise than by the command exiting:
+// End records that the activity ended otherwise than by the command exiting:
 // Denied, Failed or Lost.
-func (rec *Record) End(status Status) { rec.end(func(r *Run) { r.Status = status }) }
+func (rec *Record) End(status Status) { rec.end(func(r *Activity) { r.Status = status }) }
 
-func (rec *Record) end(change func(*Run)) {
-	rec.change(func(r *Run) {
+func (rec *Record) end(change func(*Activity)) {
+	rec.change(func(r *Activity) {
 		change(r)
 		r.EndedAt = time.Now().UTC()
 		delete(rec.s.records, r.ID)
@@ -213,25 +213,25 @@ func (rec *Record) end(change func(*Run)) {
 	})
 }
 
-func (rec *Record) change(change func(*Run)) {
+func (rec *Record) change(change func(*Activity)) {
 	s := rec.s
 	s.mu.Lock()
-	change(rec.run)
-	r := *rec.run
+	change(rec.activity)
+	r := *rec.activity
 	s.mu.Unlock()
 	s.save(&r)
 	s.onChange()
 }
 
-// List returns the runs not ended, then the others, the latest first.
-func (s *Store) List() []Run {
+// List returns the activities not ended, then the others, the latest first.
+func (s *Store) List() []Activity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]Run, 0, len(s.runs))
-	for _, r := range s.runs {
+	out := make([]Activity, 0, len(s.activities))
+	for _, r := range s.activities {
 		out = append(out, *r)
 	}
-	slices.SortFunc(out, func(a, b Run) int {
+	slices.SortFunc(out, func(a, b Activity) int {
 		if a.Status.Ended() != b.Status.Ended() {
 			if a.Status.Ended() {
 				return 1
@@ -243,17 +243,17 @@ func (s *Store) List() []Run {
 	return out
 }
 
-// Running reports how many runs are not ended.
+// Running reports how many activities are not ended.
 func (s *Store) Running() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.records)
 }
 
-// Output returns the masked output kept of a run.
+// Output returns the masked output kept of an activity.
 func (s *Store) Output(id string) ([]byte, error) {
 	s.mu.Lock()
-	_, ok := s.runs[id]
+	_, ok := s.activities[id]
 	s.mu.Unlock()
 	if !ok {
 		return nil, os.ErrNotExist
@@ -266,7 +266,7 @@ func (s *Store) Output(id string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-// Stop asks a run to stop; one ended is left as it is.
+// Stop asks an activity to stop; one ended is left as it is.
 func (s *Store) Stop(id string) {
 	s.mu.Lock()
 	rec, ok := s.records[id]
@@ -279,7 +279,7 @@ func (s *Store) Stop(id string) {
 	}
 }
 
-// StopAll asks every run to stop.
+// StopAll asks every activity to stop.
 func (s *Store) StopAll() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.records))
@@ -292,13 +292,14 @@ func (s *Store) StopAll() {
 	}
 }
 
-// Clear removes the ended runs, with their output; the others are kept,
-// so that they can still be stopped. A run whose meta.json could not be
-// removed is kept too, as it would come back on the next Open.
+// Clear removes the ended activities, with their output; the others are
+// kept, so that they can still be stopped. An activity whose meta.json
+// could not be removed is kept too, as it would come back on the next
+// Open.
 func (s *Store) Clear() error {
 	s.mu.Lock()
 	var ended []string
-	for id, r := range s.runs {
+	for id, r := range s.activities {
 		if r.Status.Ended() {
 			ended = append(ended, id)
 		}
@@ -309,7 +310,7 @@ func (s *Store) Clear() error {
 		gone, err := s.remove(id)
 		if gone {
 			s.mu.Lock()
-			delete(s.runs, id)
+			delete(s.activities, id)
 			s.mu.Unlock()
 		}
 		errs = append(errs, err)
@@ -318,10 +319,10 @@ func (s *Store) Clear() error {
 	return errors.Join(errs...)
 }
 
-// remove removes a run's files: its output first, then its meta.json,
-// so that a run whose output stays is still listed, and then what is
+// remove removes an activity's files: its output first, then its meta.json,
+// so that an activity whose output stays is still listed, and then what is
 // left. gone reports whether its meta.json was removed, and with it the
-// run, which Open would no longer list.
+// activity, which Open would no longer list.
 func (s *Store) remove(id string) (gone bool, err error) {
 	dir := filepath.Join(s.dir, id)
 	for _, name := range []string{"output.log", "meta.json"} {
@@ -332,26 +333,26 @@ func (s *Store) remove(id string) (gone bool, err error) {
 	return true, os.RemoveAll(dir)
 }
 
-// prune removes the oldest ended runs beyond keep, with s.mu held or
+// prune removes the oldest ended activities beyond keep, with s.mu held or
 // before s is shared.
 func (s *Store) prune() {
-	if len(s.runs) <= keep {
+	if len(s.activities) <= keep {
 		return
 	}
 	var ended []string
-	for id, r := range s.runs {
+	for id, r := range s.activities {
 		if r.Status.Ended() {
 			ended = append(ended, id)
 		}
 	}
 	slices.Sort(ended)
-	for _, id := range ended[:max(0, min(len(ended), len(s.runs)-keep))] {
+	for _, id := range ended[:max(0, min(len(ended), len(s.activities)-keep))] {
 		os.RemoveAll(filepath.Join(s.dir, id))
-		delete(s.runs, id)
+		delete(s.activities, id)
 	}
 }
 
-func (s *Store) save(r *Run) error {
+func (s *Store) save(r *Activity) error {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err

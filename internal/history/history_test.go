@@ -14,11 +14,11 @@ func TestLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	stops := 0
-	rec, err := s.Begin("ns", []string{"echo", "hi"}, "/tmp", func() { stops++ })
+	rec, err := s.Begin("dev", []string{"echo", "hi"}, "/tmp", func() { stops++ })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := s.List()[0]; r.Status != Authorizing || r.Namespace != "ns" {
+	if r := s.List()[0]; r.Status != Authorizing || r.Vault != "dev" {
 		t.Fatalf("begun: %+v", r)
 	}
 	rec.Authorized()
@@ -45,7 +45,7 @@ func TestLifecycle(t *testing.T) {
 func TestStoppedByUser(t *testing.T) {
 	s, _ := Open(t.TempDir(), func() {})
 	stopped := false
-	rec, _ := s.Begin("ns", []string{"sleep", "9"}, "/", func() { stopped = true })
+	rec, _ := s.Begin("dev", []string{"sleep", "9"}, "/", func() { stopped = true })
 	rec.Authorized()
 	s.Stop(rec.ID())
 	if !stopped {
@@ -57,13 +57,13 @@ func TestStoppedByUser(t *testing.T) {
 	}
 }
 
-func TestOpenMarksLeftoverRunsLost(t *testing.T) {
+func TestOpenMarksLeftoverActivitiesLost(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, func() {})
-	authorizing, _ := s.Begin("ns", []string{"a"}, "/", func() {})
-	running, _ := s.Begin("ns", []string{"b"}, "/", func() {})
+	authorizing, _ := s.Begin("dev", []string{"a"}, "/", func() {})
+	running, _ := s.Begin("dev", []string{"b"}, "/", func() {})
 	running.Authorized()
-	denied, _ := s.Begin("ns", []string{"c"}, "/", func() {})
+	denied, _ := s.Begin("dev", []string{"c"}, "/", func() {})
 	denied.End(Denied)
 
 	s2, err := Open(dir, func() {})
@@ -81,7 +81,7 @@ func TestOpenMarksLeftoverRunsLost(t *testing.T) {
 
 func TestOutputKeepsItsEnd(t *testing.T) {
 	s, _ := Open(t.TempDir(), func() {})
-	rec, _ := s.Begin("ns", []string{"yes"}, "/", func() {})
+	rec, _ := s.Begin("dev", []string{"yes"}, "/", func() {})
 	chunk := bytes.Repeat([]byte("x"), 1<<20)
 	for range 4 {
 		rec.Write(chunk)
@@ -97,13 +97,13 @@ func TestOutputKeepsItsEnd(t *testing.T) {
 	}
 }
 
-func TestClearKeepsRunsNotEnded(t *testing.T) {
+func TestClearKeepsActivitiesNotEnded(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, func() {})
-	running, _ := s.Begin("ns", []string{"serve"}, "/", func() {})
+	running, _ := s.Begin("dev", []string{"serve"}, "/", func() {})
 	running.Authorized()
 	for range 3 {
-		rec, _ := s.Begin("ns", []string{"x"}, "/", func() {})
+		rec, _ := s.Begin("dev", []string{"x"}, "/", func() {})
 		rec.Exited(0)
 	}
 	if err := s.Clear(); err != nil {
@@ -119,12 +119,12 @@ func TestClearKeepsRunsNotEnded(t *testing.T) {
 	}
 }
 
-func TestClearKeepsRunsNotRemoved(t *testing.T) {
+func TestClearKeepsActivitiesNotRemoved(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, func() {})
-	stuck, _ := s.Begin("ns", []string{"stuck"}, "/", func() {})
+	stuck, _ := s.Begin("dev", []string{"stuck"}, "/", func() {})
 	stuck.Exited(0)
-	gone, _ := s.Begin("ns", []string{"gone"}, "/", func() {})
+	gone, _ := s.Begin("dev", []string{"gone"}, "/", func() {})
 	gone.Exited(0)
 	// Without write permission, its files cannot be removed.
 	locked := filepath.Join(dir, stuck.ID())
@@ -133,7 +133,7 @@ func TestClearKeepsRunsNotRemoved(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(locked, 0o700) })
 	if err := s.Clear(); err == nil {
-		t.Fatal("no error for the run not removed")
+		t.Fatal("no error for the activity not removed")
 	}
 	if list := s.List(); len(list) != 1 || list[0].ID != stuck.ID() {
 		t.Fatalf("left %+v", list)
@@ -144,13 +144,13 @@ func TestClearKeepsRunsNotRemoved(t *testing.T) {
 	}
 }
 
-// A run whose output cannot be removed keeps its meta.json, so that it is
+// An activity whose output cannot be removed keeps its meta.json, so that it is
 // still listed, now and on the next Open, rather than left on the disk
 // unseen.
-func TestClearKeepsRunsWithOutputNotRemoved(t *testing.T) {
+func TestClearKeepsActivitiesWithOutputNotRemoved(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, func() {})
-	rec, _ := s.Begin("ns", []string{"stuck"}, "/", func() {})
+	rec, _ := s.Begin("dev", []string{"stuck"}, "/", func() {})
 	rec.Exited(0)
 	// Its output, a directory whose file cannot be removed, which
 	// RemoveAll would reach after meta.json.
@@ -183,23 +183,23 @@ func TestClearKeepsRunsWithOutputNotRemoved(t *testing.T) {
 func TestListAndPrune(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, func() {})
-	running, _ := s.Begin("ns", []string{"first"}, "/", func() {})
+	running, _ := s.Begin("dev", []string{"first"}, "/", func() {})
 	running.Authorized()
 	for range keep + 5 {
-		rec, _ := s.Begin("ns", []string{"x"}, "/", func() {})
+		rec, _ := s.Begin("dev", []string{"x"}, "/", func() {})
 		rec.Exited(0)
 	}
 	list := s.List()
 	if len(list) != keep || list[0].ID != running.ID() {
-		t.Fatalf("%d runs, first %+v", len(list), list[0])
+		t.Fatalf("%d activities, first %+v", len(list), list[0])
 	}
 	for i := 2; i < len(list); i++ {
 		if list[i-1].ID < list[i].ID {
-			t.Fatal("ended runs not latest first")
+			t.Fatal("ended activities not latest first")
 		}
 	}
 	s2, _ := Open(dir, func() {})
 	if n := len(s2.List()); n != keep {
-		t.Fatalf("reopened with %d runs", n)
+		t.Fatalf("reopened with %d activities", n)
 	}
 }

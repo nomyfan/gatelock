@@ -1,4 +1,4 @@
-// Package ipc is how `gatelock run` asks the app for a namespace's values
+// Package ipc is how `gatelock run` asks the app for a vault's values
 // and reports the command it runs.
 //
 // Each connection carries one run, as lines of JSON. The CLI sends a run
@@ -41,12 +41,12 @@ type frame struct {
 	Type string `json:"type"`
 
 	// run
-	Namespace string   `json:"namespace,omitempty"`
-	Argv      []string `json:"argv,omitempty"`
-	Cwd       string   `json:"cwd,omitempty"`
+	Vault string   `json:"vault,omitempty"`
+	Argv  []string `json:"argv,omitempty"`
+	Cwd   string   `json:"cwd,omitempty"`
 	// granted
-	RunID string         `json:"run_id,omitempty"`
-	Env   []vault.Secret `json:"env,omitempty"`
+	ActivityID string         `json:"activity_id,omitempty"`
+	Env        []vault.Secret `json:"env,omitempty"`
 	// error
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
@@ -123,9 +123,9 @@ func Listen(path string) (net.Listener, error) {
 
 // Serve handles the runs asked for on l until it is closed. It is the
 // boundary where requests are checked: the peer must be this user, the
-// namespace must exist, the command must not be empty, and the directory
+// vault must exist, the command must not be empty, and the directory
 // must be an absolute path that exists.
-func Serve(l net.Listener, v *vault.Vault, h *history.Store) error {
+func Serve(l net.Listener, v *vault.Store, h *history.Store) error {
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -138,7 +138,7 @@ func Serve(l net.Listener, v *vault.Vault, h *history.Store) error {
 	}
 }
 
-func serve(nc net.Conn, v *vault.Vault, h *history.Store) {
+func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 	defer nc.Close()
 	if !sameUser(nc) {
 		return
@@ -150,7 +150,7 @@ func serve(nc net.Conn, v *vault.Vault, h *history.Store) {
 	}
 	if msg := checkRequest(req, v); msg != "" {
 		kind := errInvalid
-		if _, err := v.Namespace(req.Namespace); errors.Is(err, vault.ErrNotFound) {
+		if _, err := v.Vault(req.Vault); errors.Is(err, vault.ErrNotFound) {
 			kind = errNotFound
 		}
 		c.write(frame{Type: "error", Error: kind, Message: msg})
@@ -162,7 +162,7 @@ func serve(nc net.Conn, v *vault.Vault, h *history.Store) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var mu sync.Mutex
 	granted, stopped := false, false
-	rec, err := h.Begin(req.Namespace, req.Argv, req.Cwd, func() {
+	rec, err := h.Begin(req.Vault, req.Argv, req.Cwd, func() {
 		mu.Lock()
 		defer mu.Unlock()
 		if granted {
@@ -192,8 +192,8 @@ func serve(nc net.Conn, v *vault.Vault, h *history.Store) {
 		}
 	}()
 
-	reason := fmt.Sprintf("unlock %s to run %s", req.Namespace, strings.Join(req.Argv, " "))
-	secrets, err := v.Resolve(ctx, req.Namespace, reason)
+	reason := fmt.Sprintf("unlock %s to run %s", req.Vault, strings.Join(req.Argv, " "))
+	secrets, err := v.Resolve(ctx, req.Vault, reason)
 	mu.Lock()
 	switch {
 	case stopped:
@@ -223,7 +223,7 @@ func serve(nc net.Conn, v *vault.Vault, h *history.Store) {
 	}
 	// Granted under mu, so that a stop asked meanwhile follows it.
 	granted = true
-	c.write(frame{Type: "granted", RunID: rec.ID(), Env: secrets})
+	c.write(frame{Type: "granted", ActivityID: rec.ID(), Env: secrets})
 	mu.Unlock()
 
 	pgid := 0
@@ -250,13 +250,13 @@ func serve(nc net.Conn, v *vault.Vault, h *history.Store) {
 	rec.End(history.Lost)
 }
 
-func checkRequest(req frame, v *vault.Vault) string {
-	if _, err := v.Namespace(req.Namespace); err != nil {
+func checkRequest(req frame, v *vault.Store) string {
+	if _, err := v.Vault(req.Vault); err != nil {
 		var names []string
-		for _, ns := range v.Namespaces() {
-			names = append(names, ns.Name)
+		for _, known := range v.Vaults() {
+			names = append(names, known.Name)
 		}
-		return fmt.Sprintf("no vault %q (vaults: %s)", req.Namespace, strings.Join(names, ", "))
+		return fmt.Sprintf("no vault %q (vaults: %s)", req.Vault, strings.Join(names, ", "))
 	}
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
 		return "no command"
@@ -293,9 +293,9 @@ func sameUser(c net.Conn) bool {
 
 // RunRequest is what `gatelock run` asks for.
 type RunRequest struct {
-	Namespace string
-	Argv      []string
-	Cwd       string
+	Vault string
+	Argv  []string
+	Cwd   string
 }
 
 // Session is a run the app authorized, as the CLI reports it.
@@ -329,11 +329,11 @@ func Dial(socketPath string, start func() error) (net.Conn, error) {
 }
 
 // Run asks the app over nc to run a command, and waits for the user to
-// authorize it. It returns the namespace's values, or an error wrapping
+// authorize it. It returns the vault's values, or an error wrapping
 // vault.ErrNotFound, vault.ErrDenied, or another with the app's message.
 func Run(nc net.Conn, req RunRequest) (*Session, []vault.Secret, error) {
 	c := newConn(nc)
-	if err := c.write(frame{Type: "run", Namespace: req.Namespace, Argv: req.Argv, Cwd: req.Cwd}); err != nil {
+	if err := c.write(frame{Type: "run", Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd}); err != nil {
 		nc.Close()
 		return nil, nil, err
 	}

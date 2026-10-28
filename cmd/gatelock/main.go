@@ -1,6 +1,7 @@
 // Gatelock keeps the secrets commands need, encrypted, and runs commands
 // with them: `gatelock run <vault> -- <command>` in a shell, which asks
-// the app, and the app, which holds the vault and the record of the runs.
+// the app, and the app, which holds the vaults and the record of the
+// activities.
 package main
 
 import (

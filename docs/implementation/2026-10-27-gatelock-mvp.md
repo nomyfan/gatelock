@@ -279,6 +279,7 @@ runs/<runid>/
 - 侧边栏可以收起，参考 Mux：红绿灯右侧有一个固定位置的切换按钮，Cmd+B 也能切换；侧边栏带动画向左滑出，页面标题随之右移，给红绿灯和按钮留出位置。收起状态不保存，app 重启后恢复展开。
 - 托盘的 Lock All、每个 namespace 的 Lock Now、修改策略，都会清空界面上已显示的值；还在进行中的查看请求返回后，也不会再把值显示出来。
 - MVP 之后加了复制和导出（需求文档已同步）。复制：值显示出来后，每行多一个复制按钮；一分钟后，如果剪贴板里还是这个值，就清空。导出：namespace 页顶部的导出按钮，先选保存位置（默认文件名 `.env.<ns>`），再走一次 `Resolve` 授权，然后写文件。文件权限是 0600，覆盖已有文件时也会改成 0600。编码用自己写的 `vault.Dotenv`：每个值都加双引号，转义 `\`、`"`、`$` 和换行。没用 `godotenv.Marshal`，因为它会把 `0123` 写成 `123`。导出的文件是明文，这是用户主动要的，不受"磁盘上没有明文"的限制。
+- namespace 改名为 vault，执行记录（run）改名为 activity，代码、磁盘和协议一起改：数据目录是 `vaults/` 和 `activities/`，协议和执行记录里的字段是 `vault` 和 `activity_id`；`vault` 包里存放全部 vault 的类型叫 `Store`，单个 vault 的元数据叫 `Vault`；`history.Run` 改为 `history.Activity`。没有写迁移，改名前的数据需要手动删掉。文档其余部分仍沿用 namespace、run 的旧叫法。
 
 ## Acceptance (2026-10-27)
 在真实 app 上（`GATELOCK_HOME=/tmp/gl-dev`）用模拟点击走完了需求文档的 Success Criteria：

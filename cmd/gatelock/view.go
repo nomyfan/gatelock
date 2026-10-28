@@ -18,37 +18,38 @@ import (
 	"gatelock/internal/vault"
 )
 
-// The pages of the main window besides the namespaces', whose ids are
-// nsPage of their names.
+// The pages of the main window besides the vaults', whose ids are
+// pageVault of their names.
 const (
-	pageRuns  = "runs"
-	pageSetup = "setup"
+	pageActivities = "activities"
+	pageSetup      = "setup"
 )
 
-func nsPage(name string) string { return "ns/" + name }
+func pageVault(name string) string { return "vault/" + name }
 
-// viewState is what the main window shows, beyond the vault and the runs.
+// viewState is what the main window shows, beyond the vaults and the
+// activities.
 type viewState struct {
 	page       string
-	namespaces []vault.Namespace
-	runs       []history.Run
+	vaults     []vault.Vault
+	activities []history.Activity
 	running    int
-	// runViews are the runs the user has opened on the runs page, by id.
-	runViews map[string]*runView
-	toast    string // shown in the next frame
-	// clearing is set while the user is asked to clear the ended runs.
+	// activityViews are the activities the user has opened, by id.
+	activityViews map[string]*activityView
+	toast         string // shown in the next frame
+	// clearing is set while the user is asked to clear the ended activities.
 	clearing bool
 
 	sidebarHidden bool
 	// headerInset is how far the pages' headers keep from the left.
 	headerInset float32
 
-	// The namespace page: the values shown, of revealedNS. revealGen
+	// The vault page: the values shown, of revealedVault. revealGen
 	// changes as they are hidden, so that a reveal under way then shows
 	// nothing.
-	revealed   map[string]string
-	revealedNS string
-	revealGen  int
+	revealed      map[string]string
+	revealedVault string
+	revealGen     int
 	// form is the row of the env list being typed in, if any.
 	form envForm
 	// deleteKey is to be deleted once the user confirms, while deleting.
@@ -60,13 +61,13 @@ type viewState struct {
 	importedFrom string
 	askRemove    bool
 
-	creating   bool
-	create     createForm
-	nsSettings bool
-	settings   settingsForm
-	// deleteNS is to be deleted once the user confirms, while deletingNS.
-	deleteNS   string
-	deletingNS bool
+	creating      bool
+	create        createForm
+	vaultSettings bool
+	settings      settingsForm
+	// deleteVault is to be deleted once the user confirms, while deletingVault.
+	deleteVault   string
+	deletingVault bool
 
 	setup setupState
 }
@@ -147,10 +148,10 @@ func (a *app) mainView(c *ui.Context) {
 			switch {
 			case v.page == pageSetup:
 				a.setupPage(c)
-			case strings.HasPrefix(v.page, "ns/"):
-				a.namespacePage(c, strings.TrimPrefix(v.page, "ns/"))
+			case strings.HasPrefix(v.page, "vault/"):
+				a.vaultPage(c, strings.TrimPrefix(v.page, "vault/"))
 			default:
-				a.runsPage(c)
+				a.activitiesPage(c)
 			}
 		})
 	})
@@ -184,13 +185,13 @@ func (a *app) sidebar(c *ui.Context) {
 	v := &a.view
 	ui.Box(c).Height(titleBand).Shrink(0).DragWindow()
 	ui.Sidebar(c, &v.page, func() {
-		item(c, pageRuns, runsIcon, "Activities", v.page, func(bool) {
+		item(c, pageActivities, activitiesIcon, "Activities", v.page, func(bool) {
 			if v.running > 0 {
 				ui.Text(c, fmt.Sprint(v.running)).FontSize(t.FontSize - 1).TextColor(t.Accent).FontWeight(600)
 			}
 		})
 		item(c, pageSetup, setupIcon, "Setup", v.page, nil)
-		ui.Row(c.Key("namespaces")).Height(28).AlignItems(ui.Center).Padding(0, t.Space(1), 0, t.Space(2)).
+		ui.Row(c.Key("vaults")).Height(28).AlignItems(ui.Center).Padding(0, t.Space(1), 0, t.Space(2)).
 			Margin(t.Space(3), 0, 0, 0).Shrink(0).Children(func() {
 			ui.Text(c, "Vaults").FontSize(t.FontSize - 1).FontWeight(600).TextColor(t.TextMuted).Grow(1)
 			if iconButton(c, "new", plusIcon, "New Vault").Clicked() {
@@ -198,31 +199,30 @@ func (a *app) sidebar(c *ui.Context) {
 				v.creating = true
 			}
 		})
-		for _, ns := range v.namespaces {
-			item(c.Key(ns.Name), nsPage(ns.Name), lockIcon, ns.Name, v.page, func(hovered bool) {
+		for _, vt := range v.vaults {
+			item(c.Key(vt.Name), pageVault(vt.Name), lockIcon, vt.Name, v.page, func(hovered bool) {
 				// Shown while hovered, so as not to crowd the list, and over
 				// the item, which it would otherwise make taller.
 				if !hovered {
 					return
 				}
 				ui.Box(c).Absolute().Right(t.Space(1)).Top(0).Bottom(0).Center().Children(func() {
-					if iconButton(c, "delete", trashIcon, "Delete "+ns.Name+"…").Clicked() {
-						v.deleteNS, v.deletingNS = ns.Name, true
+					if iconButton(c, "delete", trashIcon, "Delete "+vt.Name+"…").Clicked() {
+						v.deleteVault, v.deletingVault = vt.Name, true
 					}
 				})
 			})
 		}
-		if len(v.namespaces) == 0 {
+		if len(v.vaults) == 0 {
 			ui.Text(c, "None yet").FontSize(t.FontSize-1).TextColor(t.TextMuted).Padding(t.Space(1), t.Space(2))
 		}
 	}).Grow(1).Label("Pages").Padding(0, t.Space(2))
 }
 
-// item is a sidebar item, chosen as Mux shows it: on a darker ground
-// rather than the accent, with what trailing builds after its label,
-// told whether the item is hovered. Its icon is drawn
-// over a blank one, in the accent, since SidebarItem tints its own for the
-// accent ground.
+// item is a sidebar item, shown when chosen on a darker ground rather
+// than the accent, with what trailing builds after its label, told
+// whether the item is hovered. Its icon is drawn over a blank one, in the
+// accent, since SidebarItem tints its own for the accent ground.
 func item(c *ui.Context, id string, icon *ui.SVG, label, chosen string, trailing func(hovered bool)) {
 	t := c.Theme()
 	// Tall enough for an iconButton, with room around it.
@@ -240,7 +240,7 @@ func item(c *ui.Context, id string, icon *ui.SVG, label, chosen string, trailing
 	})
 }
 
-// header heads a page along the window's top, as Mux heads its panes:
+// header heads a page along the window's top:
 // the page's icon and title, what it is about, and its actions at the
 // right. It drags the window as a title bar would.
 func (a *app) header(c *ui.Context, icon *ui.SVG, title, subtitle string, actions func()) {
@@ -284,30 +284,30 @@ func (a *app) report(err error) {
 	}
 }
 
-// --- Namespaces ---
+// --- Vaults ---
 
-func (a *app) namespacePage(c *ui.Context, name string) {
+func (a *app) vaultPage(c *ui.Context, name string) {
 	t := c.Theme()
 	v := &a.view
-	var ns vault.Namespace
+	var vt vault.Vault
 	found := false
-	for _, n := range v.namespaces {
+	for _, n := range v.vaults {
 		if n.Name == name {
-			ns, found = n, true
+			vt, found = n, true
 		}
 	}
 	if !found {
-		v.page = pageRuns
+		v.page = pageActivities
 		return
 	}
-	if v.revealedNS != name {
-		v.revealed, v.revealedNS = nil, name
+	if v.revealedVault != name {
+		v.revealed, v.revealedVault = nil, name
 	}
 	keychain := "passphrase typed each time"
-	if ns.Keychain {
+	if vt.Keychain {
 		keychain = "passphrase in the Keychain"
 	}
-	a.header(c, lockIcon, ns.Name, describePolicy(ns.Policy)+", "+keychain, func() {
+	a.header(c, lockIcon, vt.Name, describePolicy(vt.Policy)+", "+keychain, func() {
 		if iconButton(c, "add", plusIcon, "Add Env…").Clicked() {
 			v.form = envForm{open: true, mask: true}
 		}
@@ -333,18 +333,18 @@ func (a *app) namespacePage(c *ui.Context, name string) {
 			a.exportDotenv(name)
 		}
 		if iconButton(c, "settings", settingsIcon, "Settings").Clicked() {
-			v.settings = settingsFormOf(ns)
-			v.nsSettings = true
+			v.settings = settingsFormOf(vt)
+			v.vaultSettings = true
 		}
 	})
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(t.Space(1), t.Space(5), t.Space(5), t.Space(5)).Gap(t.Space(4)).Children(func() {
 			card(c, func() {
 				adding := v.form.open && !v.form.editing
-				if len(ns.Envs) == 0 && !adding {
+				if len(vt.Envs) == 0 && !adding {
 					ui.Text(c, "No env yet. Add one with +, or import a .env file.").TextColor(t.TextMuted).Padding(t.Space(3), 0)
 				}
-				for i, e := range ns.Envs {
+				for i, e := range vt.Envs {
 					if i > 0 {
 						ui.Divider(c)
 					}
@@ -355,7 +355,7 @@ func (a *app) namespacePage(c *ui.Context, name string) {
 					}
 				}
 				if adding {
-					if len(ns.Envs) > 0 {
+					if len(vt.Envs) > 0 {
 						ui.Divider(c)
 					}
 					a.envFormRow(c, name)
@@ -367,10 +367,10 @@ func (a *app) namespacePage(c *ui.Context, name string) {
 		})
 	})
 	a.envDialogs(c, name)
-	a.settingsDialog(c, ns)
+	a.settingsDialog(c, vt)
 }
 
-func (a *app) envRow(c *ui.Context, ns string, e vault.Env) {
+func (a *app) envRow(c *ui.Context, name string, e vault.Env) {
 	t := c.Theme()
 	v := &a.view
 	ui.Row(c.Key(e.Key)).AlignItems(ui.Center).Gap(t.Space(3)).Padding(t.Space(2), 0).Children(func() {
@@ -390,7 +390,7 @@ func (a *app) envRow(c *ui.Context, ns string, e vault.Env) {
 		sensitive := e.Sensitive
 		ui.Text(c, "Mask").FontSize(t.FontSize - 1).TextColor(t.TextMuted)
 		if toggle(c.Key("mask"), &sensitive).Label("Mask in output").Tooltip("Mask its value in commands' output").Changed() {
-			a.report(a.vault.SetSensitive(ns, e.Key, sensitive))
+			a.report(a.vaults.SetSensitive(name, e.Key, sensitive))
 			a.refresh()
 		}
 		if iconButton(c, "edit", editIcon, "Edit Value").Clicked() {
@@ -415,7 +415,7 @@ type envForm struct {
 
 // envFormRow is the form's row, laid out as the others: Enter adds or
 // saves, Shift+Enter breaks the value's line, and Escape leaves it.
-func (a *app) envFormRow(c *ui.Context, ns string) {
+func (a *app) envFormRow(c *ui.Context, name string) {
 	t := c.Theme()
 	f := &a.view.form
 	key := strings.TrimSpace(f.key)
@@ -466,15 +466,15 @@ func (a *app) envFormRow(c *ui.Context, ns string) {
 			}
 		})
 	})
-	if !f.editing && a.hasEnv(ns, key) {
+	if !f.editing && a.hasEnv(name, key) {
 		ui.Text(c, key+" is there already: adding replaces its value.").FontSize(t.FontSize-1).TextColor(t.Warning).Padding(0, 0, t.Space(2), 0)
 	}
 	if !submit || key == "" {
 		return
 	}
-	err := a.vault.SetEnv(ns, key, []byte(f.value))
+	err := a.vaults.SetEnv(name, key, []byte(f.value))
 	if err == nil {
-		err = a.vault.SetSensitive(ns, key, f.mask)
+		err = a.vaults.SetSensitive(name, key, f.mask)
 	}
 	if err != nil {
 		a.view.toast = err.Error()
@@ -487,10 +487,10 @@ func (a *app) envFormRow(c *ui.Context, ns string) {
 	a.refresh()
 }
 
-func (a *app) envDialogs(c *ui.Context, ns string) {
+func (a *app) envDialogs(c *ui.Context, name string) {
 	v := &a.view
-	if confirmDialog(c, &v.deleting, "Delete "+v.deleteKey+"?", "Its value is deleted from "+ns+".", "Cancel", "Delete") {
-		a.report(a.vault.DeleteEnv(ns, v.deleteKey))
+	if confirmDialog(c, &v.deleting, "Delete "+v.deleteKey+"?", "Its value is deleted from "+name+".", "Cancel", "Delete") {
+		a.report(a.vaults.DeleteEnv(name, v.deleteKey))
 		delete(v.revealed, v.deleteKey)
 		a.refresh()
 	}
@@ -505,9 +505,9 @@ func (a *app) envDialogs(c *ui.Context, ns string) {
 	}
 }
 
-func (a *app) hasEnv(ns, key string) bool {
-	for _, n := range a.view.namespaces {
-		if n.Name == ns {
+func (a *app) hasEnv(name, key string) bool {
+	for _, n := range a.view.vaults {
+		if n.Name == name {
 			for _, e := range n.Envs {
 				if e.Key == key {
 					return true
@@ -518,13 +518,13 @@ func (a *app) hasEnv(ns, key string) bool {
 	return false
 }
 
-// lock forgets the authorization of a namespace, or of all of them with
+// lock forgets the authorization of a vault, or of all of them with
 // "", and hides the values shown.
 func (a *app) lock(name string) {
 	if name == "" {
-		a.vault.LockAll()
+		a.vaults.LockAll()
 	} else {
-		a.vault.Lock(name)
+		a.vaults.Lock(name)
 	}
 	a.hideValues()
 }
@@ -535,19 +535,19 @@ func (a *app) hideValues() {
 	a.view.revealGen++
 }
 
-// reveal asks for the namespace's values, to show them.
-func (a *app) reveal(ns string) {
+// reveal asks for the vault's values, to show them.
+func (a *app) reveal(name string) {
 	gen := a.view.revealGen
 	var secrets []vault.Secret
 	a.background(func() (err error) {
-		secrets, err = a.vault.Resolve(context.Background(), ns, "show the values of "+ns)
+		secrets, err = a.vaults.Resolve(context.Background(), name, "show the values of "+name)
 		return err
 	}, func(err error) {
 		if err != nil {
 			a.report(err)
 			return
 		}
-		if a.view.revealedNS == ns && a.view.revealGen == gen {
+		if a.view.revealedVault == name && a.view.revealGen == gen {
 			a.view.revealed = map[string]string{}
 			for _, s := range secrets {
 				a.view.revealed[s.Key] = string(s.Value)
@@ -571,22 +571,22 @@ func (a *app) copyValue(key, value string) {
 	})
 }
 
-// exportDotenv asks where to write the namespace's env as a .env file,
+// exportDotenv asks where to write the vault's env as a .env file,
 // then for the user's authorization, and writes it.
-func (a *app) exportDotenv(ns string) {
+func (a *app) exportDotenv(name string) {
 	go func() {
 		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
 			Parent:          a.win,
-			Title:           "Export " + ns,
-			DefaultPath:     ".env." + ns,
+			Title:           "Export " + name,
+			DefaultPath:     ".env." + name,
 			ButtonLabel:     "Export",
-			Message:         "The file holds the values of " + ns + " in the clear, readable only by you.",
+			Message:         "The file holds the values of " + name + " in the clear, readable only by you.",
 			ShowHiddenFiles: true,
 		})
 		if err != nil || path == "" {
 			return
 		}
-		secrets, err := a.vault.Resolve(context.Background(), ns, "export the values of "+ns)
+		secrets, err := a.vaults.Resolve(context.Background(), name, "export the values of "+name)
 		if err == nil {
 			err = writePrivateFile(path, vault.Dotenv(secrets))
 		}
@@ -619,14 +619,14 @@ func writePrivateFile(path string, data []byte) error {
 	return f.Close()
 }
 
-// importDotenv asks for a .env file, imports it into the namespace, and
+// importDotenv asks for a .env file, imports it into the vault, and
 // offers to delete it.
-func (a *app) importDotenv(ns string) {
+func (a *app) importDotenv(name string) {
 	go func() {
 		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
 			Parent:          a.win,
 			Title:           "Import .env",
-			Message:         "Choose a .env file to import into " + ns + ".",
+			Message:         "Choose a .env file to import into " + name + ".",
 			ButtonLabel:     "Import",
 			ShowHiddenFiles: true,
 		})
@@ -636,7 +636,7 @@ func (a *app) importDotenv(ns string) {
 		data, err := os.ReadFile(paths[0])
 		var keys []string
 		if err == nil {
-			keys, err = a.vault.Import(ns, data)
+			keys, err = a.vaults.Import(name, data)
 		}
 		mygo.RunOnMain(func() {
 			if err != nil {
@@ -649,7 +649,7 @@ func (a *app) importDotenv(ns string) {
 	}()
 }
 
-// createForm is the New Namespace dialog's.
+// createForm is the New Vault dialog's.
 type createForm struct {
 	name, passphrase, confirm string
 	generated                 bool
@@ -711,14 +711,14 @@ func (a *app) createDialog(c *ui.Context) {
 					v.creating = false
 				}
 				if primaryButton(c, "Create").Disabled(f.busy).Clicked() {
-					a.createNamespace()
+					a.createVault()
 				}
 			})
 		})
 	})
 }
 
-func (a *app) createNamespace() {
+func (a *app) createVault() {
 	f := &a.view.create
 	name := strings.TrimSpace(f.name)
 	switch {
@@ -732,7 +732,7 @@ func (a *app) createNamespace() {
 	f.busy, f.err = true, ""
 	passphrase, keychain, policy := []byte(f.passphrase), f.keychain, policyOf(f.policy, f.ttl)
 	a.background(func() error {
-		_, err := a.vault.Create(name, passphrase, keychain, policy)
+		_, err := a.vaults.Create(name, passphrase, keychain, policy)
 		return err
 	}, func(err error) {
 		f.busy = false
@@ -741,7 +741,7 @@ func (a *app) createNamespace() {
 			return
 		}
 		a.view.creating = false
-		a.view.page = nsPage(name)
+		a.view.page = pageVault(name)
 	})
 }
 
@@ -770,7 +770,7 @@ func policyRows(c *ui.Context, mode *int, ttl *string) {
 	}
 }
 
-// settingsForm is the namespace settings dialog's.
+// settingsForm is the vault settings dialog's.
 type settingsForm struct {
 	name     string
 	policy   int
@@ -811,39 +811,39 @@ func divider(c *ui.Context) {
 	ui.Box(c).Height(1).Shrink(0).Background(c.Theme().Border.Alpha(0.6))
 }
 
-func settingsFormOf(ns vault.Namespace) settingsForm {
-	f := settingsForm{name: ns.Name, keychain: ns.Keychain, ttl: ttls[1].label}
+func settingsFormOf(vt vault.Vault) settingsForm {
+	f := settingsForm{name: vt.Name, keychain: vt.Keychain, ttl: ttls[1].label}
 	for i, m := range policies {
-		if m == ns.Policy.Mode {
+		if m == vt.Policy.Mode {
 			f.policy = i
 		}
 	}
 	for _, t := range ttls {
-		if t.d == ns.Policy.TTL {
+		if t.d == vt.Policy.TTL {
 			f.ttl = t.label
 		}
 	}
 	return f
 }
 
-func (a *app) settingsDialog(c *ui.Context, ns vault.Namespace) {
+func (a *app) settingsDialog(c *ui.Context, vt vault.Vault) {
 	t := c.Theme()
 	v := &a.view
 	f := &v.settings
-	ui.Modal(c, &v.nsSettings, func() {
+	ui.Modal(c, &v.vaultSettings, func() {
 		ui.Column(c).Width(520).Gap(t.Space(4)).Children(func() {
 			ui.Row(c).Gap(t.Space(2)).AlignItems(ui.Center).Children(func() {
 				ui.Icon(c, lockIcon).Size(18, 18).TextColor(t.Accent)
-				ui.Text(c, ns.Name).FontSize(t.FontSize + 3).Bold()
+				ui.Text(c, vt.Name).FontSize(t.FontSize + 3).Bold()
 			})
 			group(c, "General", func() {
 				settingRow(c, "Name", "", func() {
 					ui.TextInput(c.Key("name"), &f.name).Width(180).Label("Name")
-					if ui.Button(c, "Rename").Disabled(f.name == ns.Name).Clicked() {
-						if err := a.vault.Rename(ns.Name, f.name); err != nil {
+					if ui.Button(c, "Rename").Disabled(f.name == vt.Name).Clicked() {
+						if err := a.vaults.Rename(vt.Name, f.name); err != nil {
 							v.toast = err.Error()
 						} else {
-							v.page = nsPage(f.name)
+							v.page = pageVault(f.name)
 							a.refresh()
 						}
 					}
@@ -853,8 +853,8 @@ func (a *app) settingsDialog(c *ui.Context, ns vault.Namespace) {
 				mode, ttl := f.policy, f.ttl
 				policyRows(c, &f.policy, &f.ttl)
 				if mode != f.policy || ttl != f.ttl {
-					// Changing the policy locks the namespace.
-					a.report(a.vault.SetPolicy(ns.Name, policyOf(f.policy, f.ttl)))
+					// Changing the policy locks the vault.
+					a.report(a.vaults.SetPolicy(vt.Name, policyOf(f.policy, f.ttl)))
 					a.hideValues()
 					a.refresh()
 				}
@@ -864,7 +864,7 @@ func (a *app) settingsDialog(c *ui.Context, ns vault.Namespace) {
 					if toggle(c.Key("keychain"), &f.keychain).Label("Keep the passphrase in the Keychain").Disabled(f.busy).Changed() {
 						on := f.keychain
 						f.busy = true
-						a.background(func() error { return a.vault.SetKeychain(context.Background(), ns.Name, on) }, func(err error) {
+						a.background(func() error { return a.vaults.SetKeychain(context.Background(), vt.Name, on) }, func(err error) {
 							f.busy = false
 							if err != nil {
 								f.keychain = !on
@@ -895,7 +895,7 @@ func (a *app) settingsDialog(c *ui.Context, ns vault.Namespace) {
 						}
 						pass := []byte(f.newPass)
 						f.busy = true
-						a.background(func() error { return a.vault.ChangePassphrase(context.Background(), ns.Name, pass) }, func(err error) {
+						a.background(func() error { return a.vaults.ChangePassphrase(context.Background(), vt.Name, pass) }, func(err error) {
 							f.busy = false
 							switch {
 							case errors.Is(err, vault.ErrKeychainStale):
@@ -913,37 +913,37 @@ func (a *app) settingsDialog(c *ui.Context, ns vault.Namespace) {
 			})
 			ui.Row(c).Justify(ui.End).Margin(t.Space(1), 0, 0, 0).Children(func() {
 				if primaryButton(c, "Done").Clicked() {
-					v.nsSettings = false
+					v.vaultSettings = false
 				}
 			})
 		})
 	})
 }
 
-// deleteDialog asks before deleting deleteNS, while deletingNS.
+// deleteDialog asks before deleting deleteVault, while deletingVault.
 func (a *app) deleteDialog(c *ui.Context) {
 	v := &a.view
-	if !confirmDialog(c, &v.deletingNS, "Delete "+v.deleteNS+"?", "Its env and passphrase are deleted for good.", "Cancel", "Delete") {
+	if !confirmDialog(c, &v.deletingVault, "Delete "+v.deleteVault+"?", "Its env and passphrase are deleted for good.", "Cancel", "Delete") {
 		return
 	}
 	// Off the main thread: deleting waits for any question the user is
 	// asked, which the main thread draws.
-	name := v.deleteNS
-	a.background(func() error { return a.vault.Delete(context.Background(), name) }, func(err error) {
+	name := v.deleteVault
+	a.background(func() error { return a.vaults.Delete(context.Background(), name) }, func(err error) {
 		if err != nil {
 			v.toast = err.Error()
 			return
 		}
-		if v.page == nsPage(name) {
-			v.nsSettings = false
-			v.page = pageRuns
+		if v.page == pageVault(name) {
+			v.vaultSettings = false
+			v.page = pageActivities
 		}
 	})
 }
 
-// --- Runs ---
+// --- Activities ---
 
-func (a *app) runsPage(c *ui.Context) {
+func (a *app) activitiesPage(c *ui.Context) {
 	t := c.Theme()
 	v := &a.view
 	subtitle := "Commands run through gatelock"
@@ -951,18 +951,18 @@ func (a *app) runsPage(c *ui.Context) {
 		subtitle = plural(v.running, "running", "running") + " now"
 	}
 	var actions func()
-	if len(v.runs) > v.running {
+	if len(v.activities) > v.running {
 		actions = func() {
 			if iconButton(c, "clear", trashIcon, "Clear Ended Activities…").Clicked() {
 				v.clearing = true
 			}
 		}
 	}
-	a.header(c, runsIcon, "Activities", subtitle, actions)
+	a.header(c, activitiesIcon, "Activities", subtitle, actions)
 	if confirmDialog(c, &v.clearing, "Clear ended activities?", "Their commands and output are deleted for good. Activities still running are kept.", "Cancel", "Clear") {
-		a.clearRuns()
+		a.clearActivities()
 	}
-	if len(v.runs) == 0 {
+	if len(v.activities) == 0 {
 		ui.Column(c).Grow(1).Center().Gap(t.Space(2)).Children(func() {
 			ui.Text(c, "No activities yet").FontSize(t.FontSize + 2).TextColor(t.TextMuted)
 			ui.Text(c, "gatelock run <vault> -- <command>").Font("monospace").TextColor(t.TextMuted)
@@ -972,43 +972,45 @@ func (a *app) runsPage(c *ui.Context) {
 	ui.Scroll(c.Key("list")).Grow(1).Children(func() {
 		ui.Column(c).Padding(0, t.Space(3), t.Space(3), t.Space(3)).Children(func() {
 			ui.Column(c).Shrink(0).Radius(t.Radius).Border(1, t.Border).Clip().Children(func() {
-				for i, r := range v.runs {
-					a.runItem(c, r, i > 0)
+				for i, r := range v.activities {
+					a.activityItem(c, r, i > 0)
 				}
 			})
 		})
 	})
 }
 
-// clearRuns removes the ended runs, and what the page kept of them.
-func (a *app) clearRuns() {
+// clearActivities removes the ended activities, and what the page kept of
+// them.
+func (a *app) clearActivities() {
 	a.report(a.history.Clear())
 	a.refresh()
 	v := &a.view
-	for id := range v.runViews {
-		if !slices.ContainsFunc(v.runs, func(r history.Run) bool { return r.ID == id }) {
-			delete(v.runViews, id)
+	for id := range v.activityViews {
+		if !slices.ContainsFunc(v.activities, func(r history.Activity) bool { return r.ID == id }) {
+			delete(v.activityViews, id)
 		}
 	}
 }
 
-// runView is a run the user has opened: its output, which it keeps as it
-// closes, to show while the panel shrinks, and the output's scroll, which
-// follows the end unless the user scrolls up from it.
-type runView struct {
+// activityView is an activity the user has opened: its output, which it
+// keeps as it closes, to show while the panel shrinks, and the output's
+// scroll, which follows the end unless the user scrolls up from it.
+type activityView struct {
 	open   bool
 	output string
 	scroll ui.ScrollState
 }
 
-// runItem is a run as a section of an accordion: a header saying what ran
-// and how it went, which opens to show the output below it.
-func (a *app) runItem(c *ui.Context, r history.Run, divided bool) {
+// activityItem is an activity as a section of an accordion: a header
+// saying what ran and how it went, which opens to show the output below
+// it.
+func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 	t := c.Theme()
 	v := &a.view
-	rv := v.runViews[r.ID]
+	rv := v.activityViews[r.ID]
 	if rv == nil {
-		rv = &runView{}
+		rv = &activityView{}
 	}
 	item := ui.Column(c.Key(r.ID)).Shrink(0)
 	if divided {
@@ -1025,7 +1027,7 @@ func (a *app) runItem(c *ui.Context, r history.Run, divided bool) {
 			statusDot(c, r)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(t.Space(0.5)).Children(func() {
 				ui.Text(c, strings.Join(r.Argv, " ")).Font("monospace").SingleLine().Tooltip(strings.Join(r.Argv, " "))
-				ui.Text(c, r.Namespace+"  ·  "+r.Cwd).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
+				ui.Text(c, r.Vault+"  ·  "+r.Cwd).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
 			})
 			if note := statusNote(r); note != "" {
 				ui.Text(c, note).FontSize(t.FontSize - 1).FontWeight(600).TextColor(statusColor(t, r)).SingleLine()
@@ -1042,11 +1044,11 @@ func (a *app) runItem(c *ui.Context, r history.Run, divided bool) {
 			}
 		})
 		if tr.Changed() && rv.open {
-			if v.runViews == nil {
-				v.runViews = map[string]*runView{}
+			if v.activityViews == nil {
+				v.activityViews = map[string]*activityView{}
 			}
 			rv.scroll = ui.ScrollState{Y: math.MaxFloat32}
-			v.runViews[r.ID] = rv
+			v.activityViews[r.ID] = rv
 			a.refresh()
 		}
 		p.Panel(func() {
@@ -1065,11 +1067,10 @@ func (a *app) runItem(c *ui.Context, r history.Run, divided bool) {
 	})
 }
 
-// statusDot shows a run's status as a dot in a soft halo, as Mux shows an
-// agent's: a running command's halo breathes, one waiting for the user to
-// authorize it ripples out, an ended one's stays still, as all do for less
-// motion. The colors tell the statuses apart without it.
-func statusDot(c *ui.Context, r history.Run) {
+// statusDot shows an activity's status as a dot in a soft halo: a running
+// command's halo breathes, one waiting for the user to authorize it
+// ripples out, an ended one's stays still, as all do for less motion. The colors tell the statuses apart without it.
+func statusDot(c *ui.Context, r history.Activity) {
 	t := c.Theme()
 	color := statusColor(t, r)
 	const size, core = 12, 6
@@ -1105,11 +1106,10 @@ func phase(now time.Time, period time.Duration) float32 {
 	return float32(now.UnixNano()%int64(period)) / float32(period)
 }
 
-func statusColor(t *ui.Theme, r history.Run) ui.Color {
+func statusColor(t *ui.Theme, r history.Activity) ui.Color {
 	switch r.Status {
 	case history.Running, history.Authorizing:
-		// As Mux's working agents: the accent is too near the danger red
-		// for a dot to tell apart. The motion tells these two apart.
+		// The accent is too near the danger red for a dot to tell apart. The motion tells these two apart.
 		return t.Warning
 	case history.Exited:
 		if r.ExitCode == 0 {
@@ -1123,9 +1123,9 @@ func statusColor(t *ui.Theme, r history.Run) ui.Color {
 }
 
 // statusNote says what the dot cannot: the code a command exited with,
-// unless 0, or how a run ended otherwise. It is "" for a run going on or
-// exited with 0.
-func statusNote(r history.Run) string {
+// unless 0, or how an activity ended otherwise. It is "" for an activity
+// going on or exited with 0.
+func statusNote(r history.Activity) string {
 	switch r.Status {
 	case history.Running:
 		return ""
@@ -1140,8 +1140,8 @@ func statusNote(r history.Run) string {
 	return string(r.Status)
 }
 
-// statusText describes a run's status in full, for the dot's tooltip.
-func statusText(r history.Run) string {
+// statusText describes an activity's status in full, for the dot's tooltip.
+func statusText(r history.Activity) string {
 	switch r.Status {
 	case history.Authorizing:
 		return "Waiting for authorization"
@@ -1159,8 +1159,8 @@ func statusText(r history.Run) string {
 	return "Lost: gatelock run went away before it ended"
 }
 
-// when says when a run started, and how long it took or has taken.
-func when(r history.Run) string {
+// when says when an activity started, and how long it took or has taken.
+func when(r history.Activity) string {
 	end := r.EndedAt
 	if end.IsZero() {
 		end = time.Now()

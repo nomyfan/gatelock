@@ -1,10 +1,10 @@
-// Package vault keeps namespaces of environment variables encrypted on
+// Package vault keeps vaults of environment variables encrypted on
 // disk, and hands their values out once the user authorizes it.
 //
-// Each namespace has an age key pair. Values are encrypted to its public
+// Each vault has an age key pair. Values are encrypted to its public
 // key, one file each, so they can be added without unlocking; the private
-// key is encrypted with the namespace's passphrase, which the Keychain may
-// keep. Unlocking a namespace means holding its private key, for as long as
+// key is encrypted with the vault's passphrase, which the Keychain may
+// keep. Unlocking a vault means holding its private key, for as long as
 // its Policy allows.
 package vault
 
@@ -66,8 +66,8 @@ type Policy struct {
 	TTL  time.Duration // for TTL
 }
 
-// Namespace is what is known of a namespace without unlocking it.
-type Namespace struct {
+// Vault is what is known of a vault without unlocking it.
+type Vault struct {
 	Name     string
 	Policy   Policy
 	Keychain bool // whether the Keychain keeps its passphrase
@@ -93,9 +93,9 @@ type Authorizer interface {
 	// ConfirmUser asks the person at the Mac to approve, with Touch ID or
 	// their login password.
 	ConfirmUser(ctx context.Context, reason string) error
-	// AskPassphrase asks for the passphrase of namespace ns; retry is set
+	// AskPassphrase asks for the passphrase of vault; retry is set
 	// when the one given before was wrong.
-	AskPassphrase(ctx context.Context, ns, reason string, retry bool) ([]byte, error)
+	AskPassphrase(ctx context.Context, vault, reason string, retry bool) ([]byte, error)
 }
 
 // Keychain keeps passphrases by account. Deleting a missing one is not an
@@ -106,36 +106,36 @@ type Keychain interface {
 	Delete(account string) error
 }
 
-// Vault is safe from several goroutines.
-type Vault struct {
+// Store keeps the vaults. It is safe from several goroutines.
+type Store struct {
 	dir  string
 	kc   Keychain
 	auth Authorizer
 
-	// prompting is held while the user is asked, or a namespace's Keychain
+	// prompting is held while the user is asked, or a vault's Keychain
 	// entry may change: the user is asked one thing at a time, and an
 	// unlock that would store the passphrase cannot interleave with turning
-	// the Keychain off or deleting the namespace. See hold.
+	// the Keychain off or deleting the vault. See hold.
 	prompting chan struct{}
 
 	mu     sync.Mutex
-	spaces map[string]*space // by name
+	vaults map[string]*stored // by name
 }
 
-// space is a namespace as the vault holds it.
-type space struct {
+// stored is a vault as the Store holds it.
+type stored struct {
 	id        string
 	meta      meta
 	recipient age.Recipient
 	// identity is the private key while unlocked, until expires (never if
-	// zero). gen changes as the namespace is locked, so that an unlock
+	// zero). gen changes as the vault is locked, so that an unlock
 	// begun before does not outlive it.
 	identity *age.HybridIdentity
 	expires  time.Time
 	gen      int
 }
 
-// meta is a namespace's meta.json.
+// meta is a vault's meta.json.
 type meta struct {
 	Version   int        `json:"version"`
 	Name      string     `json:"name"`
@@ -156,8 +156,8 @@ type metaEnv struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// Open opens the vault kept in dir, creating it if need be.
-func Open(dir string, kc Keychain, auth Authorizer) (*Vault, error) {
+// Open opens the store kept in dir, creating it if need be.
+func Open(dir string, kc Keychain, auth Authorizer) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -165,22 +165,22 @@ func Open(dir string, kc Keychain, auth Authorizer) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := &Vault{dir: dir, kc: kc, auth: auth, prompting: make(chan struct{}, 1), spaces: map[string]*space{}}
+	s := &Store{dir: dir, kc: kc, auth: auth, prompting: make(chan struct{}, 1), vaults: map[string]*stored{}}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		sp, err := v.load(e.Name())
+		sv, err := s.load(e.Name())
 		if err != nil {
 			return nil, fmt.Errorf("vault %s: %w", e.Name(), err)
 		}
-		v.spaces[sp.meta.Name] = sp
+		s.vaults[sv.meta.Name] = sv
 	}
-	return v, nil
+	return s, nil
 }
 
-func (v *Vault) load(id string) (*space, error) {
-	data, err := os.ReadFile(filepath.Join(v.dir, id, "meta.json"))
+func (s *Store) load(id string) (*stored, error) {
+	data, err := os.ReadFile(filepath.Join(s.dir, id, "meta.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -195,68 +195,68 @@ func (v *Vault) load(id string) (*space, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &space{id: id, meta: m, recipient: recipient}, nil
+	return &stored{id: id, meta: m, recipient: recipient}, nil
 }
 
-// Namespaces returns the namespaces by name.
-func (v *Vault) Namespaces() []Namespace {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	var out []Namespace
-	for _, sp := range v.spaces {
-		out = append(out, sp.namespace())
+// Vaults returns the vaults by name.
+func (s *Store) Vaults() []Vault {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Vault
+	for _, sv := range s.vaults {
+		out = append(out, sv.vault())
 	}
-	slices.SortFunc(out, func(a, b Namespace) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(out, func(a, b Vault) int { return strings.Compare(a.Name, b.Name) })
 	return out
 }
 
-// Namespace returns the namespace named name, or ErrNotFound.
-func (v *Vault) Namespace(name string) (Namespace, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	sp, ok := v.spaces[name]
+// Vault returns the vault named name, or ErrNotFound.
+func (s *Store) Vault(name string) (Vault, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sv, ok := s.vaults[name]
 	if !ok {
-		return Namespace{}, ErrNotFound
+		return Vault{}, ErrNotFound
 	}
-	return sp.namespace(), nil
+	return sv.vault(), nil
 }
 
-func (sp *space) namespace() Namespace {
-	ns := Namespace{
-		Name:     sp.meta.Name,
-		Policy:   Policy{Mode: sp.meta.Policy.Mode, TTL: time.Duration(sp.meta.Policy.TTLSeconds) * time.Second},
-		Keychain: sp.meta.Keychain,
+func (sv *stored) vault() Vault {
+	vault := Vault{
+		Name:     sv.meta.Name,
+		Policy:   Policy{Mode: sv.meta.Policy.Mode, TTL: time.Duration(sv.meta.Policy.TTLSeconds) * time.Second},
+		Keychain: sv.meta.Keychain,
 	}
-	for _, e := range sp.meta.Envs {
-		ns.Envs = append(ns.Envs, Env(e))
+	for _, e := range sv.meta.Envs {
+		vault.Envs = append(vault.Envs, Env(e))
 	}
-	return ns
+	return vault
 }
 
-// Create makes a namespace whose private key the passphrase encrypts, and
+// Create makes a vault whose private key the passphrase encrypts, and
 // which the Keychain keeps the passphrase of if useKeychain.
-func (v *Vault) Create(name string, passphrase []byte, useKeychain bool, p Policy) (Namespace, error) {
+func (s *Store) Create(name string, passphrase []byte, useKeychain bool, p Policy) (Vault, error) {
 	if !namePattern.MatchString(name) {
-		return Namespace{}, ErrInvalidName
+		return Vault{}, ErrInvalidName
 	}
 	if len(passphrase) == 0 {
-		return Namespace{}, errors.New("empty passphrase")
+		return Vault{}, errors.New("empty passphrase")
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if _, ok := v.spaces[name]; ok {
-		return Namespace{}, ErrExists
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.vaults[name]; ok {
+		return Vault{}, ErrExists
 	}
 	identity, err := age.GenerateHybridIdentity()
 	if err != nil {
-		return Namespace{}, err
+		return Vault{}, err
 	}
 	wrapped, err := wrapIdentity(identity, passphrase)
 	if err != nil {
-		return Namespace{}, err
+		return Vault{}, err
 	}
 	id := rand.Text()
-	sp := &space{
+	sv := &stored{
 		id:        id,
 		recipient: identity.Recipient(),
 		meta: meta{
@@ -268,93 +268,93 @@ func (v *Vault) Create(name string, passphrase []byte, useKeychain bool, p Polic
 			Envs:      []metaEnv{},
 		},
 	}
-	dir := filepath.Join(v.dir, id)
+	dir := filepath.Join(s.dir, id)
 	if err := os.MkdirAll(filepath.Join(dir, "env"), 0o700); err != nil {
-		return Namespace{}, err
+		return Vault{}, err
 	}
 	err = writeFile(filepath.Join(dir, "identity.age"), wrapped)
 	if err == nil {
-		err = v.save(sp)
+		err = s.save(sv)
 	}
 	if err == nil && useKeychain {
-		err = v.kc.Set(id, passphrase)
+		err = s.kc.Set(id, passphrase)
 	}
 	if err != nil {
 		os.RemoveAll(dir)
-		return Namespace{}, err
+		return Vault{}, err
 	}
-	v.spaces[name] = sp
-	return sp.namespace(), nil
+	s.vaults[name] = sv
+	return sv.vault(), nil
 }
 
-// Rename renames a namespace; its data and Keychain entry stay as they are.
-func (v *Vault) Rename(old, new string) error {
+// Rename renames a vault; its data and Keychain entry stay as they are.
+func (s *Store) Rename(old, new string) error {
 	if !namePattern.MatchString(new) {
 		return ErrInvalidName
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	sp, ok := v.spaces[old]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sv, ok := s.vaults[old]
 	if !ok {
 		return ErrNotFound
 	}
-	if _, ok := v.spaces[new]; ok {
+	if _, ok := s.vaults[new]; ok {
 		return ErrExists
 	}
-	sp.meta.Name = new
-	if err := v.save(sp); err != nil {
-		sp.meta.Name = old
+	sv.meta.Name = new
+	if err := s.save(sv); err != nil {
+		sv.meta.Name = old
 		return err
 	}
-	delete(v.spaces, old)
-	v.spaces[new] = sp
+	delete(s.vaults, old)
+	s.vaults[new] = sv
 	return nil
 }
 
-// Delete deletes a namespace, its values and its Keychain entry, once the
+// Delete deletes a vault, its values and its Keychain entry, once the
 // user is asked nothing else.
-func (v *Vault) Delete(ctx context.Context, name string) error {
-	release, err := v.hold(ctx)
+func (s *Store) Delete(ctx context.Context, name string) error {
+	release, err := s.hold(ctx)
 	if err != nil {
 		return err
 	}
 	defer release()
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	sp, ok := v.spaces[name]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sv, ok := s.vaults[name]
 	if !ok {
 		return ErrNotFound
 	}
-	if err := v.kc.Delete(sp.id); err != nil {
+	if err := s.kc.Delete(sv.id); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(filepath.Join(v.dir, sp.id)); err != nil {
+	if err := os.RemoveAll(filepath.Join(s.dir, sv.id)); err != nil {
 		return err
 	}
-	delete(v.spaces, name)
-	sp.lock()
+	delete(s.vaults, name)
+	sv.lock()
 	return nil
 }
 
-// SetPolicy changes how long an authorization of the namespace lasts, and
+// SetPolicy changes how long an authorization of the vault lasts, and
 // locks it.
-func (v *Vault) SetPolicy(name string, p Policy) error {
-	return v.update(name, func(sp *space) error {
-		sp.meta.Policy = metaPolicy{Mode: p.Mode, TTLSeconds: int64(p.TTL / time.Second)}
-		sp.lock()
+func (s *Store) SetPolicy(name string, p Policy) error {
+	return s.update(name, func(sv *stored) error {
+		sv.meta.Policy = metaPolicy{Mode: p.Mode, TTLSeconds: int64(p.TTL / time.Second)}
+		sv.lock()
 		return nil
 	})
 }
 
-// SetEnv sets the value of key in the namespace, which need not be
+// SetEnv sets the value of key in the vault, which need not be
 // unlocked. A new key is sensitive.
-func (v *Vault) SetEnv(name, key string, value []byte) error {
+func (s *Store) SetEnv(name, key string, value []byte) error {
 	if !keyPattern.MatchString(key) {
 		return ErrInvalidKey
 	}
-	return v.update(name, func(sp *space) error {
+	return s.update(name, func(sv *stored) error {
 		var b bytes.Buffer
-		w, err := age.Encrypt(&b, sp.recipient)
+		w, err := age.Encrypt(&b, sv.recipient)
 		if err != nil {
 			return err
 		}
@@ -362,51 +362,51 @@ func (v *Vault) SetEnv(name, key string, value []byte) error {
 		if err := w.Close(); err != nil {
 			return err
 		}
-		if err := writeFile(v.envPath(sp, key), b.Bytes()); err != nil {
+		if err := writeFile(s.envPath(sv, key), b.Bytes()); err != nil {
 			return err
 		}
 		now := time.Now().UTC()
-		if i := sp.env(key); i >= 0 {
-			sp.meta.Envs[i].UpdatedAt = now
+		if i := sv.env(key); i >= 0 {
+			sv.meta.Envs[i].UpdatedAt = now
 		} else {
-			sp.meta.Envs = append(sp.meta.Envs, metaEnv{Key: key, Sensitive: true, UpdatedAt: now})
-			slices.SortFunc(sp.meta.Envs, func(a, b metaEnv) int { return strings.Compare(a.Key, b.Key) })
+			sv.meta.Envs = append(sv.meta.Envs, metaEnv{Key: key, Sensitive: true, UpdatedAt: now})
+			slices.SortFunc(sv.meta.Envs, func(a, b metaEnv) int { return strings.Compare(a.Key, b.Key) })
 		}
 		return nil
 	})
 }
 
 // SetSensitive sets whether key's value is masked in output.
-func (v *Vault) SetSensitive(name, key string, sensitive bool) error {
-	return v.update(name, func(sp *space) error {
-		i := sp.env(key)
+func (s *Store) SetSensitive(name, key string, sensitive bool) error {
+	return s.update(name, func(sv *stored) error {
+		i := sv.env(key)
 		if i < 0 {
 			return fmt.Errorf("no env %s", key)
 		}
-		sp.meta.Envs[i].Sensitive = sensitive
+		sv.meta.Envs[i].Sensitive = sensitive
 		return nil
 	})
 }
 
-// DeleteEnv deletes key from the namespace.
-func (v *Vault) DeleteEnv(name, key string) error {
-	return v.update(name, func(sp *space) error {
-		i := sp.env(key)
+// DeleteEnv deletes key from the vault.
+func (s *Store) DeleteEnv(name, key string) error {
+	return s.update(name, func(sv *stored) error {
+		i := sv.env(key)
 		if i < 0 {
 			return nil
 		}
-		if err := os.Remove(v.envPath(sp, key)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(s.envPath(sv, key)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		sp.meta.Envs = slices.Delete(sp.meta.Envs, i, i+1)
+		sv.meta.Envs = slices.Delete(sv.meta.Envs, i, i+1)
 		return nil
 	})
 }
 
-// Import sets the values of a .env file in the namespace, replacing those
+// Import sets the values of a .env file in the vault, replacing those
 // of the same keys, and returns the keys set. Nothing is set if any key is
 // invalid. Removing the file is up to the caller.
-func (v *Vault) Import(name string, dotenv []byte) ([]string, error) {
+func (s *Store) Import(name string, dotenv []byte) ([]string, error) {
 	values, err := godotenv.UnmarshalBytes(dotenv)
 	if err != nil {
 		return nil, err
@@ -420,7 +420,7 @@ func (v *Vault) Import(name string, dotenv []byte) ([]string, error) {
 	}
 	slices.Sort(keys)
 	for _, key := range keys {
-		if err := v.SetEnv(name, key, []byte(values[key])); err != nil {
+		if err := s.SetEnv(name, key, []byte(values[key])); err != nil {
 			return nil, err
 		}
 	}
@@ -441,28 +441,28 @@ func Dotenv(secrets []Secret) []byte {
 	return []byte(b.String())
 }
 
-// Resolve returns the values of the namespace, asking the user first unless
+// Resolve returns the values of the vault, asking the user first unless
 // an authorization within its Policy holds. Under TTL and Session, requests
 // that come while the user is asked share their answer; under Every, each
 // asks. It fails with ErrNotFound, an error wrapping ErrDenied, or ctx's
 // error, which also dismisses the question asked.
-func (v *Vault) Resolve(ctx context.Context, name, reason string) ([]Secret, error) {
-	identity, err := v.unlock(ctx, name, reason)
+func (s *Store) Resolve(ctx context.Context, name, reason string) ([]Secret, error) {
+	identity, err := s.unlock(ctx, name, reason)
 	if err != nil {
 		return nil, err
 	}
-	v.mu.Lock()
-	sp, ok := v.spaces[name]
+	s.mu.Lock()
+	sv, ok := s.vaults[name]
 	if !ok {
-		v.mu.Unlock()
+		s.mu.Unlock()
 		return nil, ErrNotFound
 	}
-	envs := slices.Clone(sp.meta.Envs)
+	envs := slices.Clone(sv.meta.Envs)
 	paths := make([]string, len(envs))
 	for i, e := range envs {
-		paths[i] = v.envPath(sp, e.Key)
+		paths[i] = s.envPath(sv, e.Key)
 	}
-	v.mu.Unlock()
+	s.mu.Unlock()
 
 	secrets := make([]Secret, len(envs))
 	for i, e := range envs {
@@ -483,91 +483,91 @@ func (v *Vault) Resolve(ctx context.Context, name, reason string) ([]Secret, err
 	return secrets, nil
 }
 
-// unlock returns the namespace's private key, from its unlock if one holds,
+// unlock returns the vault's private key, from its unlock if one holds,
 // or else asking the user, and keeping it as the policy allows.
-func (v *Vault) unlock(ctx context.Context, name, reason string) (*age.HybridIdentity, error) {
-	if identity, _, err := v.unlocked(name); identity != nil || err != nil {
+func (s *Store) unlock(ctx context.Context, name, reason string) (*age.HybridIdentity, error) {
+	if identity, _, err := s.unlocked(name); identity != nil || err != nil {
 		return identity, err
 	}
-	release, err := v.hold(ctx)
+	release, err := s.hold(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 	// The user may have unlocked it, answering an earlier request.
-	identity, sp, err := v.unlocked(name)
+	identity, sv, err := s.unlocked(name)
 	if identity != nil || err != nil {
 		return identity, err
 	}
-	v.mu.Lock()
-	id, keychain, policy, gen := sp.id, sp.meta.Keychain, sp.meta.Policy, sp.gen
-	v.mu.Unlock()
+	s.mu.Lock()
+	id, keychain, policy, gen := sv.id, sv.meta.Keychain, sv.meta.Policy, sv.gen
+	s.mu.Unlock()
 
-	identity, err = v.authorize(ctx, id, name, keychain, reason)
+	identity, err = s.authorize(ctx, id, name, keychain, reason)
 	if err != nil {
 		return nil, err
 	}
 	if policy.Mode != Every {
-		v.mu.Lock()
-		if sp.gen == gen {
-			sp.identity = identity
+		s.mu.Lock()
+		if sv.gen == gen {
+			sv.identity = identity
 			if policy.Mode == TTL {
-				sp.expires = time.Now().Add(time.Duration(policy.TTLSeconds) * time.Second)
+				sv.expires = time.Now().Add(time.Duration(policy.TTLSeconds) * time.Second)
 			}
 		}
-		v.mu.Unlock()
+		s.mu.Unlock()
 	}
 	return identity, nil
 }
 
-// unlocked returns the namespace, and its private key if it is unlocked.
-func (v *Vault) unlocked(name string) (*age.HybridIdentity, *space, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	sp, ok := v.spaces[name]
+// unlocked returns the vault, and its private key if it is unlocked.
+func (s *Store) unlocked(name string) (*age.HybridIdentity, *stored, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sv, ok := s.vaults[name]
 	if !ok {
 		return nil, nil, ErrNotFound
 	}
-	if sp.identity != nil && !sp.expires.IsZero() && !time.Now().Before(sp.expires) {
-		sp.lock()
+	if sv.identity != nil && !sv.expires.IsZero() && !time.Now().Before(sv.expires) {
+		sv.lock()
 	}
-	return sp.identity, sp, nil
+	return sv.identity, sv, nil
 }
 
-// authorize asks the user, and returns the namespace's private key. With
+// authorize asks the user, and returns the vault's private key. With
 // the Keychain, the user confirms and the Keychain's passphrase decrypts
 // the key; if it is missing or wrong, the user gives the passphrase, which
 // the Keychain then keeps.
-func (v *Vault) authorize(ctx context.Context, id, name string, keychain bool, reason string) (*age.HybridIdentity, error) {
-	wrapped, err := os.ReadFile(filepath.Join(v.dir, id, "identity.age"))
+func (s *Store) authorize(ctx context.Context, id, name string, keychain bool, reason string) (*age.HybridIdentity, error) {
+	wrapped, err := os.ReadFile(filepath.Join(s.dir, id, "identity.age"))
 	if err != nil {
 		return nil, err
 	}
 	if !keychain {
-		identity, _, err := v.askPassphrase(ctx, name, reason, wrapped)
+		identity, _, err := s.askPassphrase(ctx, name, reason, wrapped)
 		return identity, err
 	}
-	if err := v.auth.ConfirmUser(ctx, reason); err != nil {
+	if err := s.auth.ConfirmUser(ctx, reason); err != nil {
 		return nil, err
 	}
-	if passphrase, err := v.kc.Get(id); err == nil {
+	if passphrase, err := s.kc.Get(id); err == nil {
 		if identity, err := unwrapIdentity(wrapped, passphrase); err == nil {
 			return identity, nil
 		}
 	}
-	identity, passphrase, err := v.askPassphrase(ctx, name, reason, wrapped)
+	identity, passphrase, err := s.askPassphrase(ctx, name, reason, wrapped)
 	if err != nil {
 		return nil, err
 	}
 	// Failing, it asks again next time.
-	v.kc.Set(id, passphrase)
+	s.kc.Set(id, passphrase)
 	return identity, nil
 }
 
 // askPassphrase asks for the passphrase until it decrypts the private key.
-func (v *Vault) askPassphrase(ctx context.Context, name, reason string, wrapped []byte) (*age.HybridIdentity, []byte, error) {
+func (s *Store) askPassphrase(ctx context.Context, name, reason string, wrapped []byte) (*age.HybridIdentity, []byte, error) {
 	for retry := false; ; retry = true {
-		passphrase, err := v.auth.AskPassphrase(ctx, name, reason, retry)
+		passphrase, err := s.auth.AskPassphrase(ctx, name, reason, retry)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -577,37 +577,37 @@ func (v *Vault) askPassphrase(ctx context.Context, name, reason string, wrapped 
 	}
 }
 
-// SetKeychain sets whether the Keychain keeps the namespace's passphrase.
+// SetKeychain sets whether the Keychain keeps the vault's passphrase.
 // Turning it on asks the user for the passphrase.
-func (v *Vault) SetKeychain(ctx context.Context, name string, on bool) error {
-	release, err := v.hold(ctx)
+func (s *Store) SetKeychain(ctx context.Context, name string, on bool) error {
+	release, err := s.hold(ctx)
 	if err != nil {
 		return err
 	}
 	defer release()
-	v.mu.Lock()
-	sp, ok := v.spaces[name]
+	s.mu.Lock()
+	sv, ok := s.vaults[name]
 	if !ok {
-		v.mu.Unlock()
+		s.mu.Unlock()
 		return ErrNotFound
 	}
-	id := sp.id
-	v.mu.Unlock()
+	id := sv.id
+	s.mu.Unlock()
 
 	if on {
-		wrapped, err := os.ReadFile(filepath.Join(v.dir, id, "identity.age"))
+		wrapped, err := os.ReadFile(filepath.Join(s.dir, id, "identity.age"))
 		if err != nil {
 			return err
 		}
-		_, passphrase, err := v.askPassphrase(ctx, name, "store the passphrase in the Keychain", wrapped)
+		_, passphrase, err := s.askPassphrase(ctx, name, "store the passphrase in the Keychain", wrapped)
 		if err != nil {
 			return err
 		}
-		if err := v.kc.Set(id, passphrase); err != nil {
+		if err := s.kc.Set(id, passphrase); err != nil {
 			return err
 		}
-		if err := v.setKeychainMeta(name, true); err != nil {
-			v.kc.Delete(id)
+		if err := s.setKeychainMeta(name, true); err != nil {
+			s.kc.Delete(id)
 			return err
 		}
 		return nil
@@ -615,11 +615,11 @@ func (v *Vault) SetKeychain(ctx context.Context, name string, on bool) error {
 	// The meta goes first: were the entry left behind, unlocking would no
 	// longer read it, while an entry gone under a meta still on would be
 	// asked for and stored again.
-	if err := v.setKeychainMeta(name, false); err != nil {
+	if err := s.setKeychainMeta(name, false); err != nil {
 		return err
 	}
-	if err := v.kc.Delete(id); err != nil {
-		v.setKeychainMeta(name, true)
+	if err := s.kc.Delete(id); err != nil {
+		s.setKeychainMeta(name, true)
 		return err
 	}
 	return nil
@@ -627,44 +627,44 @@ func (v *Vault) SetKeychain(ctx context.Context, name string, on bool) error {
 
 // hold waits until the user is asked nothing else, and keeps it so until
 // release is called; see prompting.
-func (v *Vault) hold(ctx context.Context) (release func(), err error) {
+func (s *Store) hold(ctx context.Context) (release func(), err error) {
 	select {
-	case v.prompting <- struct{}{}:
-		return func() { <-v.prompting }, nil
+	case s.prompting <- struct{}{}:
+		return func() { <-s.prompting }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-func (v *Vault) setKeychainMeta(name string, on bool) error {
-	return v.update(name, func(sp *space) error {
-		sp.meta.Keychain = on
+func (s *Store) setKeychainMeta(name string, on bool) error {
+	return s.update(name, func(sv *stored) error {
+		sv.meta.Keychain = on
 		return nil
 	})
 }
 
-// ChangePassphrase asks the user, then encrypts the namespace's private key
+// ChangePassphrase asks the user, then encrypts the vault's private key
 // with a new passphrase, and puts it in the Keychain if it keeps the old
 // one. It fails with ErrKeychainStale if only the last step fails.
-func (v *Vault) ChangePassphrase(ctx context.Context, name string, passphrase []byte) error {
+func (s *Store) ChangePassphrase(ctx context.Context, name string, passphrase []byte) error {
 	if len(passphrase) == 0 {
 		return errors.New("empty passphrase")
 	}
-	release, err := v.hold(ctx)
+	release, err := s.hold(ctx)
 	if err != nil {
 		return err
 	}
 	defer release()
-	v.mu.Lock()
-	sp, ok := v.spaces[name]
+	s.mu.Lock()
+	sv, ok := s.vaults[name]
 	if !ok {
-		v.mu.Unlock()
+		s.mu.Unlock()
 		return ErrNotFound
 	}
-	id, keychain := sp.id, sp.meta.Keychain
-	v.mu.Unlock()
+	id, keychain := sv.id, sv.meta.Keychain
+	s.mu.Unlock()
 
-	identity, err := v.authorize(ctx, id, name, keychain, "change the passphrase")
+	identity, err := s.authorize(ctx, id, name, keychain, "change the passphrase")
 	if err != nil {
 		return err
 	}
@@ -672,77 +672,77 @@ func (v *Vault) ChangePassphrase(ctx context.Context, name string, passphrase []
 	if err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(v.dir, id, "identity.age"), wrapped); err != nil {
+	if err := writeFile(filepath.Join(s.dir, id, "identity.age"), wrapped); err != nil {
 		return err
 	}
 	if keychain {
-		if err := v.kc.Set(id, passphrase); err != nil {
+		if err := s.kc.Set(id, passphrase); err != nil {
 			return fmt.Errorf("%w: %v", ErrKeychainStale, err)
 		}
 	}
 	return nil
 }
 
-// Lock forgets the namespace's authorization.
-func (v *Vault) Lock(name string) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if sp, ok := v.spaces[name]; ok {
-		sp.lock()
+// Lock forgets the vault's authorization.
+func (s *Store) Lock(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sv, ok := s.vaults[name]; ok {
+		sv.lock()
 	}
 }
 
 // LockAll forgets every authorization.
-func (v *Vault) LockAll() {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	for _, sp := range v.spaces {
-		sp.lock()
+func (s *Store) LockAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sv := range s.vaults {
+		sv.lock()
 	}
 }
 
-func (sp *space) lock() {
-	sp.identity, sp.expires = nil, time.Time{}
-	sp.gen++
+func (sv *stored) lock() {
+	sv.identity, sv.expires = nil, time.Time{}
+	sv.gen++
 }
 
-// update changes a namespace with v.mu held, and saves its meta.json. If
+// update changes a vault with s.mu held, and saves its meta.json. If
 // either fails, the meta is as it was.
-func (v *Vault) update(name string, change func(*space) error) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	sp, ok := v.spaces[name]
+func (s *Store) update(name string, change func(*stored) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sv, ok := s.vaults[name]
 	if !ok {
 		return ErrNotFound
 	}
-	before := sp.meta
-	before.Envs = slices.Clone(sp.meta.Envs)
-	err := change(sp)
+	before := sv.meta
+	before.Envs = slices.Clone(sv.meta.Envs)
+	err := change(sv)
 	if err == nil {
-		err = v.save(sp)
+		err = s.save(sv)
 	}
 	if err != nil {
-		sp.meta = before
+		sv.meta = before
 	}
 	return err
 }
 
-func (v *Vault) save(sp *space) error {
-	data, err := json.MarshalIndent(sp.meta, "", "  ")
+func (s *Store) save(sv *stored) error {
+	data, err := json.MarshalIndent(sv.meta, "", "  ")
 	if err != nil {
 		return err
 	}
-	return writeFile(filepath.Join(v.dir, sp.id, "meta.json"), data)
+	return writeFile(filepath.Join(s.dir, sv.id, "meta.json"), data)
 }
 
-func (sp *space) env(key string) int {
-	return slices.IndexFunc(sp.meta.Envs, func(e metaEnv) bool { return e.Key == key })
+func (sv *stored) env(key string) int {
+	return slices.IndexFunc(sv.meta.Envs, func(e metaEnv) bool { return e.Key == key })
 }
 
 // envPath is where key's value is kept. The name is the key in hex, since
 // the file system may not tell keys that differ in case apart.
-func (v *Vault) envPath(sp *space, key string) string {
-	return filepath.Join(v.dir, sp.id, "env", hex.EncodeToString([]byte(key))+".age")
+func (s *Store) envPath(sv *stored, key string) string {
+	return filepath.Join(s.dir, sv.id, "env", hex.EncodeToString([]byte(key))+".age")
 }
 
 func wrapIdentity(identity *age.HybridIdentity, passphrase []byte) ([]byte, error) {

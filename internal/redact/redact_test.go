@@ -26,14 +26,14 @@ func redactAll(t *testing.T, secrets []Secret, writes ...string) string {
 }
 
 func TestMasksValue(t *testing.T) {
-	got := redactAll(t, []Secret{{"ns/TOKEN", []byte("sk_live_123")}}, "token=sk_live_123 done\n")
-	if want := "token=[REDACTED:ns/TOKEN] done\n"; got != want {
+	got := redactAll(t, []Secret{{"dev/TOKEN", []byte("sk_live_123")}}, "token=sk_live_123 done\n")
+	if want := "token=[REDACTED:dev/TOKEN] done\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
 func TestMasksValueSplitAcrossWrites(t *testing.T) {
-	secrets := []Secret{{"ns/TOKEN", []byte("sk_live_123")}}
+	secrets := []Secret{{"dev/TOKEN", []byte("sk_live_123")}}
 	var out bytes.Buffer
 	w := NewWriter(&out, secrets)
 	w.Write([]byte("token=sk_li"))
@@ -43,23 +43,23 @@ func TestMasksValueSplitAcrossWrites(t *testing.T) {
 	}
 	w.Write([]byte("ve_123 done"))
 	w.Close()
-	if got, want := out.String(), "token=[REDACTED:ns/TOKEN] done"; got != want {
+	if got, want := out.String(), "token=[REDACTED:dev/TOKEN] done"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
 func TestMasksByteByByte(t *testing.T) {
-	secrets := []Secret{{"ns/TOKEN", []byte("hunter2hunter2")}}
+	secrets := []Secret{{"dev/TOKEN", []byte("hunter2hunter2")}}
 	input := "a hunter2hunter2 b hunter2 c"
 	got := redactAll(t, secrets, strings.Split(input, "")...)
-	if want := "a [REDACTED:ns/TOKEN] b hunter2 c"; got != want {
+	if want := "a [REDACTED:dev/TOKEN] b hunter2 c"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
 func TestMasksEncodings(t *testing.T) {
 	value := "p@ss/word+&=?<x>"
-	secrets := []Secret{{"ns/PW", []byte(value)}}
+	secrets := []Secret{{"dev/PW", []byte(value)}}
 	for name, form := range map[string]string{
 		"base64":        base64.StdEncoding.EncodeToString([]byte(value)),
 		"base64 raw":    base64.RawStdEncoding.EncodeToString([]byte(value)),
@@ -73,16 +73,16 @@ func TestMasksEncodings(t *testing.T) {
 		"base64 inside": base64.StdEncoding.EncodeToString([]byte("Authorization: " + value + " trailing")),
 	} {
 		got := redactAll(t, secrets, "x "+form+" y")
-		if strings.Contains(got, form) || !strings.Contains(got, "[REDACTED:ns/PW]") {
+		if strings.Contains(got, form) || !strings.Contains(got, "[REDACTED:dev/PW]") {
 			t.Errorf("%s: %q not masked: %q", name, form, got)
 		}
 	}
 }
 
 func TestMasksShortValueAndItsEncodings(t *testing.T) {
-	secrets := []Secret{{"ns/PIN", []byte("abc")}}
+	secrets := []Secret{{"dev/PIN", []byte("abc")}}
 	for _, form := range []string{"abc", "YWJj", "616263"} {
-		if got := redactAll(t, secrets, "<"+form+">"); got != "<[REDACTED:ns/PIN]>" {
+		if got := redactAll(t, secrets, "<"+form+">"); got != "<[REDACTED:dev/PIN]>" {
 			t.Errorf("%q: got %q", form, got)
 		}
 	}
@@ -90,25 +90,25 @@ func TestMasksShortValueAndItsEncodings(t *testing.T) {
 
 func TestPrefersLongestMatch(t *testing.T) {
 	secrets := []Secret{
-		{"ns/SHORT", []byte("secret")},
-		{"ns/LONG", []byte("secret-extended")},
+		{"dev/SHORT", []byte("secret")},
+		{"dev/LONG", []byte("secret-extended")},
 	}
 	got := redactAll(t, secrets, "secret-extended secret secret-ex")
-	if want := "[REDACTED:ns/LONG] [REDACTED:ns/SHORT] [REDACTED:ns/SHORT]-ex"; got != want {
+	if want := "[REDACTED:dev/LONG] [REDACTED:dev/SHORT] [REDACTED:dev/SHORT]-ex"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
 func TestCloseMasksHeldPrefix(t *testing.T) {
-	got := redactAll(t, []Secret{{"ns/TOKEN", []byte("sk_live_123")}}, "token=sk_li")
-	if want := "token=[REDACTED:ns/TOKEN]"; got != want {
+	got := redactAll(t, []Secret{{"dev/TOKEN", []byte("sk_live_123")}}, "token=sk_li")
+	if want := "token=[REDACTED:dev/TOKEN]"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
 func TestPassesUnrelatedOutputThrough(t *testing.T) {
 	input := "plain output\nwith lines\n"
-	if got := redactAll(t, []Secret{{"ns/TOKEN", []byte("zzzz")}}, input); got != input {
+	if got := redactAll(t, []Secret{{"dev/TOKEN", []byte("zzzz")}}, input); got != input {
 		t.Fatalf("got %q", got)
 	}
 	if got := redactAll(t, nil, input); got != input {
@@ -118,7 +118,7 @@ func TestPassesUnrelatedOutputThrough(t *testing.T) {
 
 func TestConcurrentWrites(t *testing.T) {
 	var out bytes.Buffer
-	w := NewWriter(&out, []Secret{{"ns/TOKEN", []byte("sk_live_123")}})
+	w := NewWriter(&out, []Secret{{"dev/TOKEN", []byte("sk_live_123")}})
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
@@ -132,7 +132,7 @@ func TestConcurrentWrites(t *testing.T) {
 	if strings.Contains(out.String(), "sk_live") {
 		t.Fatal("secret leaked")
 	}
-	if n := strings.Count(out.String(), "[REDACTED:ns/TOKEN]\n"); n != 800 {
+	if n := strings.Count(out.String(), "[REDACTED:dev/TOKEN]\n"); n != 800 {
 		t.Fatalf("got %d masks, want 800", n)
 	}
 }

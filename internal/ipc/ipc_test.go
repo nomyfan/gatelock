@@ -96,7 +96,7 @@ func startApp(t *testing.T, a *auth) *app {
 	}
 	t.Cleanup(func() { os.RemoveAll(sockDir) })
 	data := t.TempDir()
-	v, err := vault.Open(filepath.Join(data, "namespaces"), keychain{}, a)
+	v, err := vault.Open(filepath.Join(data, "vaults"), keychain{}, a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func startApp(t *testing.T, a *auth) *app {
 		t.Fatal(err)
 	}
 	v.SetEnv("prod", "TOKEN", []byte("sk_live_123"))
-	h, err := history.Open(filepath.Join(data, "runs"), func() {})
+	h, err := history.Open(filepath.Join(data, "activities"), func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func runCLI(t *testing.T, a *app, argv ...string) (int, string, error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, secrets, err := Run(nc, RunRequest{Namespace: "prod", Argv: argv, Cwd: a.cwd})
+	s, secrets, err := Run(nc, RunRequest{Vault: "prod", Argv: argv, Cwd: a.cwd})
 	if err != nil {
 		return 0, "", err
 	}
@@ -151,16 +151,16 @@ func runCLI(t *testing.T, a *app, argv ...string) (int, string, error) {
 	return code, stdout.String(), nil
 }
 
-// waitFor waits for the latest run to reach status.
-func waitFor(t *testing.T, h *history.Store, status history.Status) history.Run {
+// waitFor waits for the latest activity to reach status.
+func waitFor(t *testing.T, h *history.Store, status history.Status) history.Activity {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if runs := h.List(); len(runs) > 0 && runs[0].Status == status {
-			return runs[0]
+		if activities := h.List(); len(activities) > 0 && activities[0].Status == status {
+			return activities[0]
 		}
 	}
-	t.Fatalf("no run reached %s: %+v", status, h.List())
-	return history.Run{}
+	t.Fatalf("no activity reached %s: %+v", status, h.List())
+	return history.Activity{}
 }
 
 func TestRun(t *testing.T) {
@@ -173,8 +173,8 @@ func TestRun(t *testing.T) {
 		t.Fatalf("stdout %q", stdout)
 	}
 	r := waitFor(t, a.history, history.Exited)
-	if r.ExitCode != 4 || r.Namespace != "prod" || r.PGID == 0 {
-		t.Fatalf("run %+v", r)
+	if r.ExitCode != 4 || r.Vault != "prod" || r.PGID == 0 {
+		t.Fatalf("activity %+v", r)
 	}
 	if out, _ := a.history.Output(r.ID); string(out) != "token=[REDACTED:prod/TOKEN]\n" {
 		t.Fatalf("recorded %q", out)
@@ -211,15 +211,15 @@ func TestAuthorizingIsRecorded(t *testing.T) {
 	waitFor(t, a.history, history.Exited)
 }
 
-func TestNamespaceNotFound(t *testing.T) {
+func TestVaultNotFound(t *testing.T) {
 	a := startApp(t, &auth{})
 	nc, _ := Dial(a.socket, noStart)
-	_, _, err := Run(nc, RunRequest{Namespace: "nope", Argv: []string{"true"}, Cwd: a.cwd})
+	_, _, err := Run(nc, RunRequest{Vault: "nope", Argv: []string{"true"}, Cwd: a.cwd})
 	if !errors.Is(err, vault.ErrNotFound) || !strings.Contains(err.Error(), "prod") {
 		t.Fatalf("got %v", err)
 	}
-	if runs := a.history.List(); len(runs) != 0 {
-		t.Fatalf("recorded %+v", runs)
+	if activities := a.history.List(); len(activities) != 0 {
+		t.Fatalf("recorded %+v", activities)
 	}
 }
 
@@ -227,7 +227,7 @@ func TestInvalidCwd(t *testing.T) {
 	a := startApp(t, &auth{})
 	for _, cwd := range []string{"relative", "/no/such/dir"} {
 		nc, _ := Dial(a.socket, noStart)
-		if _, _, err := Run(nc, RunRequest{Namespace: "prod", Argv: []string{"true"}, Cwd: cwd}); err == nil {
+		if _, _, err := Run(nc, RunRequest{Vault: "prod", Argv: []string{"true"}, Cwd: cwd}); err == nil {
 			t.Errorf("cwd %q accepted", cwd)
 		}
 	}
@@ -250,7 +250,7 @@ func TestStopFromApp(t *testing.T) {
 func TestCLIKilledStopsCommand(t *testing.T) {
 	a := startApp(t, &auth{})
 	nc, _ := Dial(a.socket, noStart)
-	s, _, err := Run(nc, RunRequest{Namespace: "prod", Argv: []string{"sleep", "30"}, Cwd: a.cwd})
+	s, _, err := Run(nc, RunRequest{Vault: "prod", Argv: []string{"sleep", "30"}, Cwd: a.cwd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestAppGoneStopsCommand(t *testing.T) {
 		a.l.breakAll()
 	}()
 	nc, _ := Dial(a.socket, noStart)
-	s, _, err := Run(nc, RunRequest{Namespace: "prod", Argv: []string{"sleep", "30"}, Cwd: a.cwd})
+	s, _, err := Run(nc, RunRequest{Vault: "prod", Argv: []string{"sleep", "30"}, Cwd: a.cwd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestAppGoneWhileAuthorizing(t *testing.T) {
 		a.l.breakAll()
 	}()
 	nc, _ := Dial(a.socket, noStart)
-	if _, _, err := Run(nc, RunRequest{Namespace: "prod", Argv: []string{"true"}, Cwd: a.cwd}); err == nil {
+	if _, _, err := Run(nc, RunRequest{Vault: "prod", Argv: []string{"true"}, Cwd: a.cwd}); err == nil {
 		t.Fatal("run granted")
 	}
 	waitFor(t, a.history, history.Lost)
@@ -338,7 +338,7 @@ func TestStopWhileAuthorizing(t *testing.T) {
 		a.history.Stop(r.ID)
 	}()
 	nc, _ := Dial(a.socket, noStart)
-	_, _, err := Run(nc, RunRequest{Namespace: "prod", Argv: []string{"true"}, Cwd: a.cwd})
+	_, _, err := Run(nc, RunRequest{Vault: "prod", Argv: []string{"true"}, Cwd: a.cwd})
 	if err == nil || !strings.Contains(err.Error(), "stopped") {
 		t.Fatalf("got %v", err)
 	}
