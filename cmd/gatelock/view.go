@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,6 +36,8 @@ type viewState struct {
 	// runViews are the runs the user has opened on the runs page, by id.
 	runViews map[string]*runView
 	toast    string // shown in the next frame
+	// clearing is set while the user is asked to clear the ended runs.
+	clearing bool
 
 	sidebarHidden bool
 	// headerInset is how far the pages' headers keep from the left.
@@ -947,7 +950,18 @@ func (a *app) runsPage(c *ui.Context) {
 	if v.running > 0 {
 		subtitle = plural(v.running, "running", "running") + " now"
 	}
-	a.header(c, runsIcon, "Activities", subtitle, nil)
+	var actions func()
+	if len(v.runs) > v.running {
+		actions = func() {
+			if iconButton(c, "clear", trashIcon, "Clear Ended Activities…").Clicked() {
+				v.clearing = true
+			}
+		}
+	}
+	a.header(c, runsIcon, "Activities", subtitle, actions)
+	if confirmDialog(c, &v.clearing, "Clear ended activities?", "Their commands and output are deleted for good. Activities still running are kept.", "Cancel", "Clear") {
+		a.clearRuns()
+	}
 	if len(v.runs) == 0 {
 		ui.Column(c).Grow(1).Center().Gap(t.Space(2)).Children(func() {
 			ui.Text(c, "No activities yet").FontSize(t.FontSize + 2).TextColor(t.TextMuted)
@@ -964,6 +978,18 @@ func (a *app) runsPage(c *ui.Context) {
 			})
 		})
 	})
+}
+
+// clearRuns removes the ended runs, and what the page kept of them.
+func (a *app) clearRuns() {
+	a.report(a.history.Clear())
+	a.refresh()
+	v := &a.view
+	for id := range v.runViews {
+		if !slices.ContainsFunc(v.runs, func(r history.Run) bool { return r.ID == id }) {
+			delete(v.runViews, id)
+		}
+	}
 }
 
 // runView is a run the user has opened: its output, which it keeps as it

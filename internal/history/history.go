@@ -8,7 +8,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -288,6 +290,46 @@ func (s *Store) StopAll() {
 	for _, id := range ids {
 		s.Stop(id)
 	}
+}
+
+// Clear removes the ended runs, with their output; the others are kept,
+// so that they can still be stopped. A run whose meta.json could not be
+// removed is kept too, as it would come back on the next Open.
+func (s *Store) Clear() error {
+	s.mu.Lock()
+	var ended []string
+	for id, r := range s.runs {
+		if r.Status.Ended() {
+			ended = append(ended, id)
+		}
+	}
+	s.mu.Unlock()
+	var errs []error
+	for _, id := range ended {
+		gone, err := s.remove(id)
+		if gone {
+			s.mu.Lock()
+			delete(s.runs, id)
+			s.mu.Unlock()
+		}
+		errs = append(errs, err)
+	}
+	s.onChange()
+	return errors.Join(errs...)
+}
+
+// remove removes a run's files: its output first, then its meta.json,
+// so that a run whose output stays is still listed, and then what is
+// left. gone reports whether its meta.json was removed, and with it the
+// run, which Open would no longer list.
+func (s *Store) remove(id string) (gone bool, err error) {
+	dir := filepath.Join(s.dir, id)
+	for _, name := range []string{"output.log", "meta.json"} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, err
+		}
+	}
+	return true, os.RemoveAll(dir)
 }
 
 // prune removes the oldest ended runs beyond keep, with s.mu held or

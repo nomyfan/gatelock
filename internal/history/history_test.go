@@ -2,6 +2,8 @@ package history
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -92,6 +94,89 @@ func TestOutputKeepsItsEnd(t *testing.T) {
 	}
 	if !s.List()[0].Truncated {
 		t.Fatal("not marked truncated")
+	}
+}
+
+func TestClearKeepsRunsNotEnded(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, func() {})
+	running, _ := s.Begin("ns", []string{"serve"}, "/", func() {})
+	running.Authorized()
+	for range 3 {
+		rec, _ := s.Begin("ns", []string{"x"}, "/", func() {})
+		rec.Exited(0)
+	}
+	if err := s.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if list := s.List(); len(list) != 1 || list[0].ID != running.ID() {
+		t.Fatalf("left %+v", list)
+	}
+	running.Exited(0)
+	s2, _ := Open(dir, func() {})
+	if list := s2.List(); len(list) != 1 || list[0].ID != running.ID() {
+		t.Fatalf("reopened with %+v", list)
+	}
+}
+
+func TestClearKeepsRunsNotRemoved(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, func() {})
+	stuck, _ := s.Begin("ns", []string{"stuck"}, "/", func() {})
+	stuck.Exited(0)
+	gone, _ := s.Begin("ns", []string{"gone"}, "/", func() {})
+	gone.Exited(0)
+	// Without write permission, its files cannot be removed.
+	locked := filepath.Join(dir, stuck.ID())
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	if err := s.Clear(); err == nil {
+		t.Fatal("no error for the run not removed")
+	}
+	if list := s.List(); len(list) != 1 || list[0].ID != stuck.ID() {
+		t.Fatalf("left %+v", list)
+	}
+	s2, _ := Open(dir, func() {})
+	if list := s2.List(); len(list) != 1 || list[0].ID != stuck.ID() {
+		t.Fatalf("reopened with %+v", list)
+	}
+}
+
+// A run whose output cannot be removed keeps its meta.json, so that it is
+// still listed, now and on the next Open, rather than left on the disk
+// unseen.
+func TestClearKeepsRunsWithOutputNotRemoved(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, func() {})
+	rec, _ := s.Begin("ns", []string{"stuck"}, "/", func() {})
+	rec.Exited(0)
+	// Its output, a directory whose file cannot be removed, which
+	// RemoveAll would reach after meta.json.
+	out := filepath.Join(dir, rec.ID(), "output.log")
+	if err := os.Remove(out); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(out, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "part"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(out, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(out, 0o700) })
+	if err := s.Clear(); err == nil {
+		t.Fatal("no error for the output not removed")
+	}
+	if _, err := os.Stat(filepath.Join(dir, rec.ID(), "meta.json")); err != nil {
+		t.Fatalf("meta.json: %v", err)
+	}
+	s2, _ := Open(dir, func() {})
+	if list := s2.List(); len(list) != 1 || list[0].ID != rec.ID() {
+		t.Fatalf("reopened with %+v", list)
 	}
 }
 

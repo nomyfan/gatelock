@@ -230,6 +230,25 @@ func TestWritePrivateFile(t *testing.T) {
 	}
 }
 
+func TestClearEndedActivities(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("npm run deploy")
+	if err := tt.Click("Clear Ended Activities…"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Clear"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("npm run dev") || tt.HasText("npm run deploy") || len(a.view.runViews) != 0 {
+		t.Fatalf("texts %q, views %v", tt.Texts(), a.view.runViews)
+	}
+	if _, ok := tt.Find("Clear Ended Activities…"); ok {
+		t.Fatal("clear shown with nothing ended")
+	}
+}
+
 func TestDeleteFromSidebarShowsOnHover(t *testing.T) {
 	a := testApp(t)
 	tt := ui.NewTester(a.mainView, 960, 640)
