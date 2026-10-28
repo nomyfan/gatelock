@@ -99,15 +99,15 @@ func installCLI() error {
 func agentNote(command string) string {
 	return `## Secrets
 
-Commands that need credentials run through Gatelock, which puts a namespace's env in the command's environment and masks the values in its output:
+Commands that need credentials run through Gatelock, which puts a vault's env in the command's environment and masks the values in its output:
 
-    ` + command + ` run <namespace> -- <command> [args...]
+    ` + command + ` run <vault> -- <command> [args...]
 
 The shell expands $VARS before Gatelock adds the env, so to use one in the command's arguments, let a shell inside expand it:
 
-    ` + command + ` run <namespace> -- sh -c 'curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com'
+    ` + command + ` run <vault> -- sh -c 'curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com'
 
-Ask the user which namespace to use. Do not try to print or read the values.
+Ask the user which vault to use. Do not try to print or read the values.
 `
 }
 

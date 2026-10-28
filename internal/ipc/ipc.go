@@ -256,7 +256,7 @@ func checkRequest(req frame, v *vault.Vault) string {
 		for _, ns := range v.Namespaces() {
 			names = append(names, ns.Name)
 		}
-		return fmt.Sprintf("no namespace %q (namespaces: %s)", req.Namespace, strings.Join(names, ", "))
+		return fmt.Sprintf("no vault %q (vaults: %s)", req.Namespace, strings.Join(names, ", "))
 	}
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
 		return "no command"

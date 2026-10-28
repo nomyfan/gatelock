@@ -91,6 +91,29 @@ func primaryButton(c *ui.Context, label string) ui.Element {
 	return ui.PrimaryButton(c, label).Padding(t.Space(1.5)+1, t.Space(3.5))
 }
 
+// confirmDialog asks, while *open, whether to do what confirm names, and
+// reports whether the user clicked it. It stands in for ui.AlertDialog,
+// whose width follows the theme's spacing, which is too narrow in ours.
+func confirmDialog(c *ui.Context, open *bool, title, message, cancel, confirm string) bool {
+	t := c.Theme()
+	confirmed := false
+	ui.Modal(c, open, func() {
+		ui.Column(c).Width(400).Gap(t.Space(3)).Children(func() {
+			ui.Text(c, title).FontSize(t.FontSize + 3).Bold().Wrap()
+			ui.Text(c, message).TextColor(t.TextMuted).Wrap()
+			ui.Row(c).Gap(t.Space(2)).Justify(ui.End).Margin(t.Space(3), 0, 0, 0).Children(func() {
+				if ui.Button(c, cancel).Clicked() {
+					*open = false
+				}
+				if primaryButton(c, confirm).AutoFocus().Clicked() {
+					*open, confirmed = false, true
+				}
+			})
+		})
+	}).Role(ui.RoleAlertDialog).Label(title).Description(message)
+	return confirmed
+}
+
 // toggle is a switch three quarters as tall as the other controls, as
 // AppKit's: a compact theme's own would be smaller still.
 func toggle(c *ui.Context, on *bool) ui.Element {

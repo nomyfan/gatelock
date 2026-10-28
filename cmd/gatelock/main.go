@@ -1,5 +1,5 @@
 // Gatelock keeps the secrets commands need, encrypted, and runs commands
-// with them: `gatelock run <namespace> -- <command>` in a shell, which asks
+// with them: `gatelock run <vault> -- <command>` in a shell, which asks
 // the app, and the app, which holds the vault and the record of the runs.
 package main
 
@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 )
 
-const usage = `usage: gatelock run <namespace> [--] <command> [args...]
+const usage = `usage: gatelock run <vault> [--] <command> [args...]
 
-Runs the command with the namespace's env, once you authorize it in
+Runs the command with the vault's env, once you authorize it in
 Gatelock, and masks their values in its output.`
 
 func main() {

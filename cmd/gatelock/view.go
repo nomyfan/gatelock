@@ -181,7 +181,7 @@ func (a *app) sidebar(c *ui.Context) {
 	v := &a.view
 	ui.Box(c).Height(titleBand).Shrink(0).DragWindow()
 	ui.Sidebar(c, &v.page, func() {
-		item(c, pageRuns, runsIcon, "Runs", v.page, func(bool) {
+		item(c, pageRuns, runsIcon, "Activities", v.page, func(bool) {
 			if v.running > 0 {
 				ui.Text(c, fmt.Sprint(v.running)).FontSize(t.FontSize - 1).TextColor(t.Accent).FontWeight(600)
 			}
@@ -189,8 +189,8 @@ func (a *app) sidebar(c *ui.Context) {
 		item(c, pageSetup, setupIcon, "Setup", v.page, nil)
 		ui.Row(c.Key("namespaces")).Height(28).AlignItems(ui.Center).Padding(0, t.Space(1), 0, t.Space(2)).
 			Margin(t.Space(3), 0, 0, 0).Shrink(0).Children(func() {
-			ui.Text(c, "Namespaces").FontSize(t.FontSize - 1).FontWeight(600).TextColor(t.TextMuted).Grow(1)
-			if iconButton(c, "new", plusIcon, "New Namespace").Clicked() {
+			ui.Text(c, "Vaults").FontSize(t.FontSize - 1).FontWeight(600).TextColor(t.TextMuted).Grow(1)
+			if iconButton(c, "new", plusIcon, "New Vault").Clicked() {
 				v.create = createForm{keychain: true, ttl: ttls[1].label}
 				v.creating = true
 			}
@@ -486,14 +486,14 @@ func (a *app) envFormRow(c *ui.Context, ns string) {
 
 func (a *app) envDialogs(c *ui.Context, ns string) {
 	v := &a.view
-	if ui.AlertDialog(c, &v.deleting, "Delete "+v.deleteKey+"?", "Its value is deleted from "+ns+".", "Cancel", "Delete") == 1 {
+	if confirmDialog(c, &v.deleting, "Delete "+v.deleteKey+"?", "Its value is deleted from "+ns+".", "Cancel", "Delete") {
 		a.report(a.vault.DeleteEnv(ns, v.deleteKey))
 		delete(v.revealed, v.deleteKey)
 		a.refresh()
 	}
 	message := fmt.Sprintf("Imported %s: %s.\n\nDelete %s, so that the values are no longer in the clear?",
 		plural(len(v.imported), "env", "env"), strings.Join(v.imported, ", "), v.importedFrom)
-	if ui.AlertDialog(c, &v.askRemove, "Delete the .env file?", message, "Keep It", "Delete") == 1 {
+	if confirmDialog(c, &v.askRemove, "Delete the .env file?", message, "Keep It", "Delete") {
 		if err := os.Remove(v.importedFrom); err != nil {
 			v.toast = err.Error()
 		} else {
@@ -663,14 +663,14 @@ func (a *app) createDialog(c *ui.Context) {
 	f := &v.create
 	ui.Modal(c, &v.creating, func() {
 		ui.Column(c).Width(520).Gap(t.Space(4)).Children(func() {
-			ui.Text(c, "New Namespace").FontSize(t.FontSize + 3).Bold()
+			ui.Text(c, "New Vault").FontSize(t.FontSize + 3).Bold()
 			group(c, "General", func() {
 				settingRow(c, "Name", "Lowercase letters, digits, '.', '_' and '-'.", func() {
 					ui.TextInput(c.Key("name"), &f.name).Placeholder("prod-api").AutoFocus().Label("Name").Width(180)
 				})
 			})
 			group(c, "Passphrase", func() {
-				settingRow(c, "Passphrase", "Encrypts the namespace's key. Keep it safe: it restores the namespace without the Keychain.", func() {
+				settingRow(c, "Passphrase", "Encrypts the vault's key. Keep it safe: it restores the vault without the Keychain.", func() {
 					if !f.generated && ui.Button(c, "Generate").Clicked() {
 						f.passphrase, f.generated = generatePassphrase(), true
 					}
@@ -872,7 +872,7 @@ func (a *app) settingsDialog(c *ui.Context, ns vault.Namespace) {
 				})
 				divider(c)
 				if !f.changing {
-					settingRow(c, "Change passphrase", "It encrypts the namespace's key, and restores the namespace without the Keychain.", func() {
+					settingRow(c, "Change passphrase", "It encrypts the vault's key, and restores the vault without the Keychain.", func() {
 						if ui.Button(c, "Change…").Clicked() {
 							f.changing = true
 						}
@@ -920,7 +920,7 @@ func (a *app) settingsDialog(c *ui.Context, ns vault.Namespace) {
 // deleteDialog asks before deleting deleteNS, while deletingNS.
 func (a *app) deleteDialog(c *ui.Context) {
 	v := &a.view
-	if ui.AlertDialog(c, &v.deletingNS, "Delete "+v.deleteNS+"?", "Its env and passphrase are deleted for good.", "Cancel", "Delete") != 1 {
+	if !confirmDialog(c, &v.deletingNS, "Delete "+v.deleteNS+"?", "Its env and passphrase are deleted for good.", "Cancel", "Delete") {
 		return
 	}
 	// Off the main thread: deleting waits for any question the user is
@@ -947,11 +947,11 @@ func (a *app) runsPage(c *ui.Context) {
 	if v.running > 0 {
 		subtitle = plural(v.running, "running", "running") + " now"
 	}
-	a.header(c, runsIcon, "Runs", subtitle, nil)
+	a.header(c, runsIcon, "Activities", subtitle, nil)
 	if len(v.runs) == 0 {
 		ui.Column(c).Grow(1).Center().Gap(t.Space(2)).Children(func() {
-			ui.Text(c, "No runs yet").FontSize(t.FontSize + 2).TextColor(t.TextMuted)
-			ui.Text(c, "gatelock run <namespace> -- <command>").Font("monospace").TextColor(t.TextMuted)
+			ui.Text(c, "No activities yet").FontSize(t.FontSize + 2).TextColor(t.TextMuted)
+			ui.Text(c, "gatelock run <vault> -- <command>").Font("monospace").TextColor(t.TextMuted)
 		})
 		return
 	}

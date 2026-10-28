@@ -191,7 +191,7 @@ func (a *app) makeTray() {
 		ToolTip:        "Gatelock",
 		Menu: mygo.NewMenu([]*mygo.MenuItem{
 			{Label: "Open Gatelock", Click: func(*mygo.MenuItem, *mygo.Window) { a.openWindow() }},
-			{Label: "Lock All Namespaces", Click: func(*mygo.MenuItem, *mygo.Window) {
+			{Label: "Lock All Vaults", Click: func(*mygo.MenuItem, *mygo.Window) {
 				a.lock("")
 				a.refresh()
 			}},

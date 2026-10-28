@@ -30,9 +30,9 @@ import (
 )
 
 var (
-	ErrNotFound    = errors.New("namespace not found")
-	ErrExists      = errors.New("namespace already exists")
-	ErrInvalidName = errors.New("invalid namespace name: use lowercase letters, digits, '.', '_' and '-'")
+	ErrNotFound    = errors.New("vault not found")
+	ErrExists      = errors.New("vault already exists")
+	ErrInvalidName = errors.New("invalid vault name: use lowercase letters, digits, '.', '_' and '-'")
 	ErrInvalidKey  = errors.New("invalid env key: use letters, digits and '_', not starting with a digit")
 	// ErrDenied is what Resolve fails with when the user declines; an
 	// Authorizer returns it, or an error wrapping it, when they do.
@@ -172,7 +172,7 @@ func Open(dir string, kc Keychain, auth Authorizer) (*Vault, error) {
 		}
 		sp, err := v.load(e.Name())
 		if err != nil {
-			return nil, fmt.Errorf("namespace %s: %w", e.Name(), err)
+			return nil, fmt.Errorf("vault %s: %w", e.Name(), err)
 		}
 		v.spaces[sp.meta.Name] = sp
 	}
