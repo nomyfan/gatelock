@@ -1,0 +1,6 @@
+[skills.mygo-maintenance]
+source_url = "https://github.com/egoist/mygo/tree/v0.7.1/cmd/mygo/template/shared/.agents/skills/mygo-maintenance"
+slug = "egoist/mygo"
+path = "cmd/mygo/template/shared/.agents/skills/mygo-maintenance"
+sha = "2de6c009cd66dffd4f0476ec73165be529d7b152"
+checksum = "sha256:1bff921c431a31a23b30a599f61477ca55400a888b80944c9f27863e34198c12"
