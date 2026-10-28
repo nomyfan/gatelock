@@ -401,6 +401,49 @@ func TestRenameAndDelete(t *testing.T) {
 	}
 }
 
+func TestRenameEnv(t *testing.T) {
+	dir := t.TempDir()
+	auth := &fakeAuth{}
+	v, _ := Open(dir, &fakeKeychain{items: map[string]string{}}, auth)
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
+	v.SetEnv("dev", "TOKEN", []byte("secret"))
+	v.SetEnv("dev", "PORT", []byte("5432"))
+	v.SetSensitive("dev", "PORT", false)
+	// A file left under the new name by a rename that stopped short.
+	vt, _ := v.Vault("dev")
+	sv := v.vaults["dev"]
+	os.WriteFile(v.envPath(sv, "DB_PORT"), []byte("stale"), 0o600)
+
+	if err := v.RenameEnv("dev", "PORT", "DB_PORT"); err != nil {
+		t.Fatal(err)
+	}
+	if auth.confirms.Load() != 0 || auth.asks.Load() != 0 {
+		t.Fatal("renaming asked the user")
+	}
+	if _, err := os.Stat(v.envPath(sv, "PORT")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old file: %v", err)
+	}
+	if err := v.RenameEnv("dev", "DB_PORT", "TOKEN"); !errors.Is(err, ErrKeyExists) {
+		t.Fatalf("rename onto TOKEN: %v", err)
+	}
+	if err := v.RenameEnv("dev", "DB_PORT", "1X"); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("rename to 1X: %v", err)
+	}
+	if err := v.RenameEnv("dev", "MISSING", "OTHER"); err == nil {
+		t.Fatal("renamed a missing env")
+	}
+
+	v2, _ := Open(dir, &fakeKeychain{items: map[string]string{}}, &fakeAuth{})
+	vt2, _ := v2.Vault("dev")
+	if len(vt2.Envs) != 2 || vt2.Envs[0].Key != "DB_PORT" || vt2.Envs[0].Sensitive || !vt2.Envs[0].UpdatedAt.Equal(vt.Envs[0].UpdatedAt) {
+		t.Fatalf("reopened: %+v", vt2.Envs)
+	}
+	secrets, err := v.Resolve(context.Background(), "dev", "test")
+	if err != nil || secrets[0].Key != "DB_PORT" || string(secrets[0].Value) != "5432" || string(secrets[1].Value) != "secret" {
+		t.Fatalf("got %+v, %v", secrets, err)
+	}
+}
+
 func TestValidation(t *testing.T) {
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, &fakeAuth{})
 	for _, name := range []string{"", "Upper", "../x", "-x", "a b"} {
@@ -510,6 +553,13 @@ func TestKeychainEntryStaysRemovedPastAnUnlockUnderWay(t *testing.T) {
 		if len(kc.items) != 0 {
 			t.Fatalf("%s: keychain entry stored again", name)
 		}
+	}
+}
+
+func TestDotenvExample(t *testing.T) {
+	got := string(DotenvExample([]Env{{Key: "PORT"}, {Key: "TOKEN", Sensitive: true}}))
+	if got != "PORT=\nTOKEN=\n" {
+		t.Fatalf("got %q", got)
 	}
 }
 

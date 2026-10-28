@@ -119,6 +119,26 @@ func toggle(c *ui.Context, on *bool) ui.Element {
 	return ui.Switch(c, on).Size(32, 18).Radius(9)
 }
 
+// copyable is a button showing what content builds, text that a click
+// copies, which label names. It is highlighted while hovered, as plain
+// text would not show it can be clicked.
+func copyable(c *ui.Context, key, label string, content func()) ui.Element {
+	t := c.Theme()
+	b := ui.ButtonBase(c.Key(key)).Padding(2, copyInset(c)).Radius(4).MinWidth(0).Cursor(ui.CursorPointer).
+		Label(label).Tooltip("Click to copy")
+	if b.Pressed() {
+		b.Background(t.Text.Alpha(0.14))
+	} else if b.Hovered() {
+		b.Background(t.Text.Alpha(0.08))
+	}
+	b.Children(content)
+	return b
+}
+
+// copyInset is copyable's inset of its text, an input's, so that the text
+// lines up with the env form's.
+func copyInset(c *ui.Context) float32 { return c.Theme().Space(1.5) + 1 }
+
 // iconButton is a small button showing an icon, which its label names.
 func iconButton(c *ui.Context, key string, icon *ui.SVG, label string) ui.Element {
 	t := c.Theme()

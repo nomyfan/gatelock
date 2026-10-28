@@ -335,6 +335,9 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 			if m.Item("Export to .env…").Chosen() {
 				a.exportDotenv(name)
 			}
+			if m.Item("Export to .env.example…").Chosen() {
+				a.exportExample(vt)
+			}
 		})
 		if iconButton(c, "settings", settingsIcon, "Settings…").Clicked() {
 			v.settings = settingsFormOf(vt)
@@ -344,7 +347,7 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Padding(t.Space(1), t.Space(5), t.Space(5), t.Space(5)).Gap(t.Space(4)).Children(func() {
 			card(c, func() {
-				adding := v.form.open && !v.form.editing
+				adding := v.form.open && v.form.from == ""
 				if len(vt.Envs) == 0 && !adding {
 					ui.Text(c, "No env yet. Add one with +, or import a .env file.").TextColor(t.TextMuted).Padding(t.Space(3), 0)
 				}
@@ -352,7 +355,7 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 					if i > 0 {
 						ui.Divider(c)
 					}
-					if v.form.open && v.form.editing && v.form.key == e.Key {
+					if v.form.open && v.form.from == e.Key {
 						a.envFormRow(c, name)
 					} else {
 						a.envRow(c, name, e)
@@ -377,19 +380,33 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 func (a *app) envRow(c *ui.Context, name string, e vault.Env) {
 	t := c.Theme()
 	v := &a.view
+	value, shown := v.revealed[e.Key]
+	edit := func() {
+		// The value shown, if it is, to edit rather than type anew.
+		v.form = envForm{open: true, from: e.Key, key: e.Key, value: value, was: value, mask: e.Sensitive}
+	}
 	ui.Row(c.Key(e.Key)).AlignItems(ui.Center).Gap(t.Space(3)).Padding(t.Space(2), 0).Children(func() {
-		ui.Text(c, e.Key).Font("monospace").Bold().Width(220).Shrink(0).SingleLine().Tooltip(e.Key)
-		value, shown := v.revealed[e.Key]
-		if shown {
-			ui.Text(c, value).Font("monospace").Selectable().Grow(1).MinWidth(0).SingleLine().Tooltip(value)
-		} else {
-			ui.Text(c, "••••••••").TextColor(t.TextMuted).Grow(1)
-		}
+		ui.Row(c).Width(220).Shrink(0).Children(func() {
+			if copyable(c, "key", "Copy "+e.Key, func() {
+				ui.Text(c, e.Key).Font("monospace").Bold().SingleLine().MinWidth(0)
+			}).Clicked() {
+				mygo.Clipboard.WriteText(e.Key)
+				v.toast = "Copied the key " + e.Key
+			}
+		})
+		ui.Row(c).Grow(1).MinWidth(0).Children(func() {
+			if !shown {
+				ui.Text(c, "••••••••").TextColor(t.TextMuted).Padding(0, copyInset(c))
+				return
+			}
+			if copyable(c, "value", "Copy the value of "+e.Key, func() {
+				ui.Text(c, value).Font("monospace").SingleLine().MinWidth(0)
+			}).Clicked() {
+				a.copyValue(e.Key, value)
+			}
+		})
 		if shown && e.Sensitive && len(value) < 4 {
 			ui.Text(c, "Short: masks may hit other output").FontSize(t.FontSize - 2).TextColor(t.Warning)
-		}
-		if shown && iconButton(c, "copy", copyIcon, "Copy Value").Clicked() {
-			a.copyValue(e.Key, value)
 		}
 		sensitive := e.Sensitive
 		ui.Text(c, "Mask").FontSize(t.FontSize - 1).TextColor(t.TextMuted)
@@ -397,22 +414,26 @@ func (a *app) envRow(c *ui.Context, name string, e vault.Env) {
 			a.report(a.vaults.SetSensitive(name, e.Key, sensitive))
 			a.refresh()
 		}
-		if iconButton(c, "edit", editIcon, "Edit Value").Clicked() {
-			// The value shown, if it is, to edit rather than type anew.
-			v.form = envForm{open: true, editing: true, key: e.Key, value: value, mask: e.Sensitive}
+		if iconButton(c, "edit", editIcon, "Edit").Clicked() {
+			edit()
 		}
-		if iconButton(c, "delete", trashIcon, "Delete").Clicked() {
+		if iconButton(c, "delete", trashIcon, "Delete…").Clicked() {
 			v.deleteKey, v.deleting = e.Key, true
 		}
 	})
 }
 
-// envForm is a row of the env list the user types in: a new env, or a new
-// value for key while editing.
+// envForm is a row of the env list the user types in: a new env, or the
+// env from while editing, whose key and value may change.
 type envForm struct {
-	open, editing bool
-	key, value    string
-	mask          bool
+	open bool
+	// from is the key of the env edited, "" while adding.
+	from       string
+	key, value string
+	// was is the value shown when editing began, "" if hidden: the value is
+	// saved only if it changed from it.
+	was  string
+	mask bool
 	// submit is set by Enter in the value, between frames.
 	submit bool
 }
@@ -422,7 +443,11 @@ type envForm struct {
 func (a *app) envFormRow(c *ui.Context, name string) {
 	t := c.Theme()
 	f := &a.view.form
+	editing := f.from != ""
 	key := strings.TrimSpace(f.key)
+	// Another env's key, whose value adding replaces, and which editing
+	// can't take.
+	taken := key != f.from && a.hasEnv(name, key)
 	if c.Shortcut(0, ui.KeyEscape) {
 		f.open = false
 		return
@@ -432,16 +457,14 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 	// At the top, so that the key and the buttons stay by the value's first
 	// line as it grows.
 	ui.Row(c.Key("form")).AlignItems(ui.Start).Gap(t.Space(3)).Padding(t.Space(2), 0).Children(func() {
-		if f.editing {
-			// Padded as the text in an input is, to line up with the value's.
-			ui.Text(c, f.key).Font("monospace").Bold().Width(220).Shrink(0).SingleLine().Padding(t.Space(1.5)+1, 0)
-		} else {
-			k := ui.TextInput(c.Key("key"), &f.key).Placeholder("KEY").Font("monospace").Width(220).Shrink(0).AutoFocus().Label("Key")
-			submit = submit || k.Submitted()
+		k := ui.TextInput(c.Key("key"), &f.key).Placeholder("KEY").Font("monospace").Width(220).Shrink(0).Label("Key")
+		if !editing {
+			k.AutoFocus()
 		}
+		submit = submit || k.Submitted()
 		placeholder := "Value"
-		if f.editing {
-			placeholder = "New value"
+		if editing && f.was == "" {
+			placeholder = "Unchanged"
 		}
 		// MinHeight(0): a text area is otherwise three lines high at least.
 		value := ui.TextArea(c.Key("value"), &f.value).Lines(1, 6).MinHeight(0).Font("monospace").Placeholder(placeholder).Grow(1).MinWidth(0).Label("Value").
@@ -452,17 +475,17 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 				f.submit = true
 				return true
 			})
-		if f.editing {
+		if editing {
 			value.AutoFocus()
 		}
 		ui.Row(c).AlignItems(ui.Center).Gap(t.Space(3)).Shrink(0).Children(func() {
 			ui.Text(c, "Mask").FontSize(t.FontSize - 1).TextColor(t.TextMuted)
 			toggle(c.Key("mask"), &f.mask).Label("Mask in output").Tooltip("Mask its value in commands' output")
 			label := "Add"
-			if f.editing {
+			if editing {
 				label = "Save"
 			}
-			if iconButton(c, "submit", checkIcon, label).Disabled(key == "").Clicked() {
+			if iconButton(c, "submit", checkIcon, label).Disabled(key == "" || editing && taken).Clicked() {
 				submit = true
 			}
 			if iconButton(c, "cancel", closeIcon, "Cancel").Clicked() {
@@ -470,13 +493,34 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 			}
 		})
 	})
-	if !f.editing && a.hasEnv(name, key) {
-		ui.Text(c, key+" is there already: adding replaces its value.").FontSize(t.FontSize-1).TextColor(t.Warning).Padding(0, 0, t.Space(2), 0)
+	if taken {
+		message := key + " is there already: adding replaces its value."
+		if editing {
+			message = key + " is there already."
+		}
+		ui.Text(c, message).FontSize(t.FontSize-1).TextColor(t.Warning).Padding(0, 0, t.Space(2), 0)
 	}
-	if !submit || key == "" {
+	if !submit || key == "" || editing && taken {
 		return
 	}
-	err := a.vaults.SetEnv(name, key, []byte(f.value))
+	var err error
+	if editing && key != f.from {
+		err = a.vaults.RenameEnv(name, f.from, key)
+		if err == nil {
+			if r := a.view.revealed; r != nil {
+				if value, ok := r[f.from]; ok {
+					r[key] = value
+					delete(r, f.from)
+				}
+			}
+			// So that the row stays, should saving the rest fail.
+			f.from = key
+		}
+	}
+	write := !editing || f.value != f.was
+	if err == nil && write {
+		err = a.vaults.SetEnv(name, key, []byte(f.value))
+	}
 	if err == nil {
 		err = a.vaults.SetSensitive(name, key, f.mask)
 	}
@@ -484,7 +528,7 @@ func (a *app) envFormRow(c *ui.Context, name string) {
 		a.view.toast = err.Error()
 		return
 	}
-	if a.view.revealed != nil {
+	if write && a.view.revealed != nil {
 		a.view.revealed[key] = f.value
 	}
 	*f = envForm{}
@@ -601,6 +645,32 @@ func (a *app) exportDotenv(name string) {
 				a.view.toast = "Exported " + plural(len(secrets), "env", "env") + " to " + path
 			}
 			a.refresh()
+		})
+	}()
+}
+
+// exportExample asks where to write the vault's keys as a .env.example,
+// with no values, and writes it. Keys are not secret, so nothing is asked.
+func (a *app) exportExample(vt vault.Vault) {
+	go func() {
+		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
+			Parent:          a.win,
+			Title:           "Export " + vt.Name + " as an Example",
+			DefaultPath:     ".env.example",
+			ButtonLabel:     "Export",
+			Message:         "The file lists the keys of " + vt.Name + ", without their values.",
+			ShowHiddenFiles: true,
+		})
+		if err != nil || path == "" {
+			return
+		}
+		err = os.WriteFile(path, vault.DotenvExample(vt.Envs), 0o644)
+		mygo.RunOnMain(func() {
+			if err != nil {
+				a.report(err)
+			} else {
+				a.view.toast = "Exported " + plural(len(vt.Envs), "key", "keys") + " to " + path
+			}
 		})
 	}()
 }

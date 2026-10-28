@@ -34,6 +34,7 @@ var (
 	ErrExists      = errors.New("vault already exists")
 	ErrInvalidName = errors.New("invalid vault name: use lowercase letters, digits, '.', '_' and '-'")
 	ErrInvalidKey  = errors.New("invalid env key: use letters, digits and '_', not starting with a digit")
+	ErrKeyExists   = errors.New("env already exists")
 	// ErrDenied is what Resolve fails with when the user declines; an
 	// Authorizer returns it, or an error wrapping it, when they do.
 	ErrDenied = errors.New("authorization denied")
@@ -370,7 +371,7 @@ func (s *Store) SetEnv(name, key string, value []byte) error {
 			sv.meta.Envs[i].UpdatedAt = now
 		} else {
 			sv.meta.Envs = append(sv.meta.Envs, metaEnv{Key: key, Sensitive: true, UpdatedAt: now})
-			slices.SortFunc(sv.meta.Envs, func(a, b metaEnv) int { return strings.Compare(a.Key, b.Key) })
+			sortEnvs(sv.meta.Envs)
 		}
 		return nil
 	})
@@ -386,6 +387,53 @@ func (s *Store) SetSensitive(name, key string, sensitive bool) error {
 		sv.meta.Envs[i].Sensitive = sensitive
 		return nil
 	})
+}
+
+// RenameEnv renames the env old to new, which need not be unlocked: the
+// value stays encrypted as it was. Renaming to a key the vault has is
+// ErrKeyExists.
+func (s *Store) RenameEnv(name, old, new string) error {
+	if !keyPattern.MatchString(new) {
+		return ErrInvalidKey
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sv, ok := s.vaults[name]
+	if !ok {
+		return ErrNotFound
+	}
+	i := sv.env(old)
+	if i < 0 {
+		return fmt.Errorf("no env %s", old)
+	}
+	if new == old {
+		return nil
+	}
+	if sv.env(new) >= 0 {
+		return ErrKeyExists
+	}
+	// The value is linked under the new name, and unlinked from the old
+	// once the meta names the new key, so that the file the meta names is
+	// there whenever this stops. A file under the new name already is one
+	// such a stop left, which the meta does not name.
+	from, to := s.envPath(sv, old), s.envPath(sv, new)
+	if err := os.Remove(to); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Link(from, to); err != nil {
+		return err
+	}
+	before := slices.Clone(sv.meta.Envs)
+	sv.meta.Envs[i].Key = new
+	sortEnvs(sv.meta.Envs)
+	if err := s.save(sv); err != nil {
+		sv.meta.Envs = before
+		os.Remove(to)
+		return err
+	}
+	// Left behind, the old file would only take space.
+	os.Remove(from)
+	return nil
 }
 
 // DeleteEnv deletes key from the vault.
@@ -437,6 +485,16 @@ func Dotenv(secrets []Secret) []byte {
 	var b strings.Builder
 	for _, s := range secrets {
 		fmt.Fprintf(&b, "%s=\"%s\"\n", s.Key, dotenvEscaper.Replace(string(s.Value)))
+	}
+	return []byte(b.String())
+}
+
+// DotenvExample writes the keys of envs as a .env.example, each with no
+// value.
+func DotenvExample(envs []Env) []byte {
+	var b strings.Builder
+	for _, e := range envs {
+		b.WriteString(e.Key + "=\n")
 	}
 	return []byte(b.String())
 }
@@ -733,6 +791,10 @@ func (s *Store) save(sv *stored) error {
 		return err
 	}
 	return writeFile(filepath.Join(s.dir, sv.id, "meta.json"), data)
+}
+
+func sortEnvs(envs []metaEnv) {
+	slices.SortFunc(envs, func(a, b metaEnv) int { return strings.Compare(a.Key, b.Key) })
 }
 
 func (sv *stored) env(key string) int {

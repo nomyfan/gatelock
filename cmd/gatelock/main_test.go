@@ -202,17 +202,21 @@ func TestLockHidesValuesShownAndUnderWay(t *testing.T) {
 	}
 }
 
+// A key copies on a click, a value only while shown.
 func TestCopyShowsOnlyWithTheValue(t *testing.T) {
 	a := testApp(t)
 	a.view.page = pageVault("prod-api")
 	tt := ui.NewTester(a.mainView, 960, 640)
-	if _, ok := tt.Find("Copy Value"); ok {
+	if _, ok := tt.Find("Copy PORT"); !ok {
+		t.Fatal("copy not offered for a key")
+	}
+	if _, ok := tt.Find("Copy the value of PORT"); ok {
 		t.Fatal("copy offered for a hidden value")
 	}
 	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"STRIPE_KEY": "sk_live_1", "PORT": "5432"}
 	tt.Frame()
 	// Not clicked: the clipboard is the system's, and needs the running app.
-	if _, ok := tt.Find("Copy Value"); !ok {
+	if _, ok := tt.Find("Copy the value of PORT"); !ok {
 		t.Fatalf("copy not offered for a value shown: %q", tt.Texts())
 	}
 }
@@ -273,7 +277,7 @@ func TestDotenvMenu(t *testing.T) {
 	if err := tt.Click(".env File"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(tt.Menu(), ", "); got != "Import from .env…, Export to .env…" {
+	if got := strings.Join(tt.Menu(), ", "); got != "Import from .env…, Export to .env…, Export to .env.example…" {
 		t.Fatalf("menu %q", got)
 	}
 }
@@ -320,8 +324,8 @@ func TestEditEnvInline(t *testing.T) {
 	a.view.page = pageVault("prod-api")
 	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"PORT": "5432", "STRIPE_KEY": "sk_live_1"}
 	tt := ui.NewTester(a.mainView, 960, 640)
-	tt.Click("Edit Value") // PORT's, the first
-	if f := a.view.form; !f.open || !f.editing || f.key != "PORT" || f.value != "5432" || f.mask {
+	tt.Click("Edit") // PORT's, the first
+	if f := a.view.form; !f.open || f.from != "PORT" || f.key != "PORT" || f.value != "5432" || f.mask {
 		t.Fatalf("form %+v", f)
 	}
 	tt.Type("1")
@@ -333,6 +337,33 @@ func TestEditEnvInline(t *testing.T) {
 	vt, _ := a.vaults.Vault("prod-api")
 	if len(vt.Envs) != 2 || vt.Envs[0].Sensitive {
 		t.Fatalf("envs %+v", vt.Envs)
+	}
+}
+
+// Renaming with the values hidden keeps the value, which the form never
+// had.
+func TestRenameEnvInline(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageVault("prod-api")
+	before, _ := a.vaults.Vault("prod-api")
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("Edit") // PORT's, the first
+	tt.Click("Key")
+	tt.Key(ui.Cmd, ui.KeyA)
+	tt.Type("STRIPE_KEY")
+	if !tt.HasText("STRIPE_KEY is there already.") {
+		t.Fatal("no warning for a key taken")
+	}
+	tt.Key(0, ui.KeyEnter)
+	if !a.view.form.open {
+		t.Fatal("saved onto a key taken")
+	}
+	tt.Key(ui.Cmd, ui.KeyA)
+	tt.Type("DB_PORT")
+	tt.Key(0, ui.KeyEnter)
+	vt, _ := a.vaults.Vault("prod-api")
+	if a.view.form.open || len(vt.Envs) != 2 || vt.Envs[0].Key != "DB_PORT" || !vt.Envs[0].UpdatedAt.Equal(before.Envs[0].UpdatedAt) {
+		t.Fatalf("open %v, envs %+v", a.view.form.open, vt.Envs)
 	}
 }
 
