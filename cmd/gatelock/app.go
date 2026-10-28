@@ -3,13 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -211,7 +208,7 @@ func trayTitle(running int) string {
 func (a *app) makeTray() {
 	tray, err := mygo.NewTray(mygo.TrayOptions{
 		ID:             "gatelock",
-		Icon:           trayIcon(),
+		Icon:           trayIcon,
 		IconIsTemplate: true,
 		ToolTip:        "Gatelock",
 		Menu: mygo.NewMenu([]*mygo.MenuItem{
@@ -232,31 +229,11 @@ func (a *app) makeTray() {
 	tray.SetTitle(trayTitle(a.view.running))
 }
 
-// trayIcon draws a padlock, black on clear, for macOS to tint.
-func trayIcon() []byte {
-	const size = 36
-	img := image.NewNRGBA(image.Rect(0, 0, size, size))
-	ink := color.NRGBA{A: 255}
-	for y := range size {
-		for x := range size {
-			fx, fy := float64(x)+0.5, float64(y)+0.5
-			// The body.
-			body := fx >= 8 && fx <= 28 && fy >= 16 && fy <= 32
-			// The shackle: a ring's upper half and its legs down to the body.
-			d := math.Hypot(fx-18, fy-12)
-			shackle := fy <= 12 && d >= 5 && d <= 8.5
-			legs := fy > 12 && fy < 17 && ((fx >= 9.5 && fx <= 13) || (fx >= 23 && fx <= 26.5))
-			// The keyhole is left clear.
-			hole := math.Hypot(fx-18, fy-22) <= 2.2 || (fx >= 17 && fx <= 19 && fy >= 22 && fy <= 27)
-			if (body || shackle || legs) && !hole {
-				img.Set(x, y, ink)
-			}
-		}
-	}
-	var b bytes.Buffer
-	png.Encode(&b, img)
-	return b.Bytes()
-}
+// trayIcon is the hedgehog of the app icon as a silhouette, black on clear,
+// for macOS to tint; scripts/make-tray-icon.sh renders it from design/.
+//
+//go:embed icons/tray.png
+var trayIcon []byte
 
 // keychain keeps passphrases in the login Keychain, under the app's
 // identifier.
