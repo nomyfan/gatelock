@@ -12,6 +12,7 @@ CGO_ENABLED=0 go test ./...               # all tests
 go test ./internal/vault -run TestDenied  # a single test
 GATELOCK_DIALOG_TESTS=1 go test ./internal/macauth -v   # the tests that show the system's Touch ID dialog, skipped otherwise
 GATELOCK_SNAPSHOTS=<dir> go test ./cmd/gatelock         # also write the UI tests' frames into <dir> as PNGs
+scripts/make-icon.sh                      # render resources/icon.png from the artwork in design/ (needs ImageMagick with librsvg)
 ```
 
 `mygo` is pinned through the `tool` directive in `go.mod`; nothing to install separately. App settings (name, identifier `dev.callcc.gatelock`, entry `./cmd/gatelock`) live in `mygo.config.ts`, which MyGo evaluates with Bun or Node.js 22.6+; it sets `CFBundleVersion` to the short commit hash.
@@ -83,6 +84,8 @@ The record of activities, owned by the app: each activity's meta and its masked 
 `ConfirmUser`: Touch ID or the login password through LocalAuthentication, called with purego (no cgo). The user canceling is `vault.ErrDenied`; a canceled context invalidates the dialog.
 
 ### Other directories
+
+`resources/` holds assets shipped inside the app bundle (the app icon, `icon.png`, which MyGo picks up by that name); `design/` holds source files that are not shipped, the icon's artwork `icon.svg`; `scripts/` holds tools for maintaining the repository, such as `make-icon.sh`, which renders `resources/icon.png` from `design/icon.svg` on the macOS icon grid. The menu bar's padlock is drawn in code (`trayIcon`), apart from the app icon.
 
 `build/` holds `go tool mygo build`'s output and `.mygo/` its development builds (both ignored); `.scratchpad/` (ignored) holds throwaway experiments.
 
