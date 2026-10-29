@@ -16,7 +16,7 @@ scripts/make-icon.sh                      # render resources/icon.png from the a
 scripts/make-tray-icon.sh                 # render cmd/gatelock/icons/tray.png, the menu bar icon, from design/tray.svg (likewise)
 ```
 
-`mygo` is pinned through the `tool` directive in `go.mod`; nothing to install separately. App settings (name, identifier `dev.callcc.gatelock`, entry `./cmd/gatelock`) live in `mygo.config.ts`, which MyGo evaluates with Bun or Node.js 22.6+; it sets `CFBundleVersion` to the short commit hash.
+`mygo` is pinned through the `tool` directive in `go.mod`; nothing to install separately. App settings (name, identifier `dev.callcc.gatelock`, entry `./cmd/gatelock`) live in `mygo.config.ts`, which MyGo evaluates with Bun or Node.js 22.6+; it sets `CFBundleVersion` to the short commit hash, and for `build` the signing identity: `MACOS_SIGNING_IDENTITY` if set (`-` for ad hoc), else the first Developer ID Application or Apple Development certificate that `security find-identity` lists, else ad hoc.
 
 `GATELOCK_HOME` moves the data directory and the socket (default `~/Library/Application Support/Gatelock`); the CLI and the app read it the same way, so set it for both to work against a scratch vault rather than the user's own.
 
@@ -95,4 +95,4 @@ The record of activities, owned by the app: each activity's meta and its masked 
 - Keep this file current. When a change adds, removes, renames or moves a module or file listed above, shifts a module's responsibility, or changes the commands, the CLI contract or the disk format, update this file in the same change.
 - Changing the on-disk format (`meta.json`'s `version`, file layout, encryption) needs a migration for existing data.
 - Before changing UI code, read `.agents/skills/mygo-maintenance/SKILL.md` for MyGo's lifetime, identity, threading and testing rules. UI tests use `ui.NewTester`. `.agents/skills/` is ignored; `go tool mygo install-skills` installs it, and `.agents/skills.toml`, which is committed, records the version installed.
-- Unsigned builds make the Keychain ask "allow access" again after each rebuild. Accept the prompt, or sign the development build with a self-signed certificate.
+- Ad-hoc builds make the Keychain ask twice per vault after each rebuild: its item's access list and its partition list both name the app by its CDHash, which every rebuild changes. A self-signed certificate settles only the first, since the partition list names apps by Team ID. An Apple Development certificate (free, from Xcode's Personal Team) settles both; after switching to it each vault asks once more, then not again. `mygo dev` ignores `signingIdentity` and signs ad hoc unless given `-sign` (e.g. `-sign "Apple Development"`, which codesign matches by prefix); its app's identifier is `dev.callcc.gatelock.dev`, so its Keychain items are apart from the installed app's.
