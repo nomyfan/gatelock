@@ -68,7 +68,7 @@ func TestMasksEncodings(t *testing.T) {
 		"hex upper":     strings.ToUpper(hex.EncodeToString([]byte(value))),
 		"query escape":  url.QueryEscape(value),
 		"path escape":   url.PathEscape(value),
-		"json escaped":  `p@ss/word+&=?<x>`,
+		"json escaped":  `p@ss/word+\u0026=?\u003cx\u003e`,
 		"json no html":  `p@ss/word+&=?<x>`,
 		"base64 inside": base64.StdEncoding.EncodeToString([]byte("Authorization: " + value + " trailing")),
 	} {
@@ -102,6 +102,97 @@ func TestPrefersLongestMatch(t *testing.T) {
 func TestCloseMasksHeldPrefix(t *testing.T) {
 	got := redactAll(t, []Secret{{"dev/TOKEN", []byte("sk_live_123")}}, "token=sk_li")
 	if want := "token=[REDACTED:dev/TOKEN]"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestMasksOnlyDSNPassword(t *testing.T) {
+	for _, tc := range []struct{ value, output, want string }{
+		{
+			"postgres://app:s3cret@db.internal:5432/orders",
+			"connecting to postgres://app:s3cret@db.internal:5432/orders\n",
+			"connecting to postgres://app:[REDACTED:dev/DB]@db.internal:5432/orders\n",
+		},
+		{
+			"postgresql+asyncpg://app:s3cret@db.internal/orders",
+			"url=postgresql+asyncpg://app:s3cret@db.internal/orders",
+			"url=postgresql+asyncpg://app:[REDACTED:dev/DB]@db.internal/orders",
+		},
+		{
+			"jdbc:postgresql://db.internal/orders?user=app&password=s3cret",
+			"jdbc:postgresql://db.internal/orders?user=app&password=s3cret ok",
+			"jdbc:postgresql://db.internal/orders?user=app&password=[REDACTED:dev/DB] ok",
+		},
+		{
+			"postgres://postgres:postgres@localhost/postgres",
+			"postgres://postgres:postgres@localhost/postgres postgres\n",
+			"postgres://postgres:[REDACTED:dev/DB]@localhost/postgres postgres\n",
+		},
+		{
+			"postgres://app:p%7Ess@db/x",
+			"postgres://app:p%7Ess@db/x",
+			"postgres://app:[REDACTED:dev/DB]@db/x",
+		},
+		{
+			"postgres://app:one@db/x?sslpassword=two",
+			"postgres://app:one@db/x?sslpassword=two",
+			"postgres://app:[REDACTED:dev/DB]@db/x?sslpassword=[REDACTED:dev/DB]",
+		},
+		{
+			"postgres://app:s3cret@db/x?options=a@b",
+			"postgres://app:s3cret@db/x?options=a@b\n",
+			"postgres://app:[REDACTED:dev/DB]@db/x?options=a@b\n",
+		},
+		{
+			"postgres://app:pa/ss@db/x?password=other",
+			"postgres://app:pa/ss@db/x?password=other",
+			"[REDACTED:dev/DB]",
+		},
+		{
+			"https://hooks.slack.com/services/T0/B0/XXXX",
+			"POST https://hooks.slack.com/services/T0/B0/XXXX",
+			"POST [REDACTED:dev/DB]",
+		},
+	} {
+		got := redactAll(t, []Secret{{"dev/DB", []byte(tc.value)}}, tc.output)
+		if got != tc.want {
+			t.Errorf("%q: got %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestMasksDSNPasswordInEscapedForms(t *testing.T) {
+	value := "jdbc:mysql://app:p+s<s>@db/x?user=a&b<c>"
+	secrets := []Secret{{"dev/DB", []byte(value)}}
+	for _, tc := range []struct{ name, output, want string }{
+		{"query escape", url.QueryEscape(value), "jdbc%3Amysql%3A%2F%2Fapp%3A[REDACTED:dev/DB]%40db%2Fx%3Fuser%3Da%26b%3Cc%3E"},
+		{"path escape", url.PathEscape(value), "jdbc:mysql:%2F%2Fapp:[REDACTED:dev/DB]@db%2Fx%3Fuser=a&b%3Cc%3E"},
+		{"json escaped", `jdbc:mysql://app:p+s\u003cs\u003e@db/x?user=a\u0026b\u003cc\u003e`, `jdbc:mysql://app:[REDACTED:dev/DB]@db/x?user=a\u0026b\u003cc\u003e`},
+		{"base64", base64.StdEncoding.EncodeToString([]byte(value)), "[REDACTED:dev/DB]"},
+		{"hex", hex.EncodeToString([]byte(value)), "[REDACTED:dev/DB]"},
+		{"base64 inside", base64.StdEncoding.EncodeToString([]byte("DATABASE_URL=" + value + "\n")), ""},
+	} {
+		got := redactAll(t, secrets, tc.output)
+		if tc.want != "" && got != tc.want || !strings.Contains(got, "[REDACTED:dev/DB]") {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestMasksDSNPasswordByteByByte(t *testing.T) {
+	secrets := []Secret{{"dev/DB", []byte("postgres://app:s3cret@db/x")}}
+	input := "a postgres://app:s3cret@db/x b postgres://app:s3 c\n"
+	got := redactAll(t, secrets, strings.Split(input, "")...)
+	if want := "a postgres://app:[REDACTED:dev/DB]@db/x b postgres://app:s3 c\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestCloseMasksHeldDSNPrefixWhole(t *testing.T) {
+	// What replaces a whole DSN shows its host and database; a beginning
+	// of it left at Close must not show the rest, which was never output.
+	got := redactAll(t, []Secret{{"dev/DB", []byte("postgres://app:s3cret@db.internal/orders")}}, "url=postgres://app:s3")
+	if want := "url=[REDACTED:dev/DB]"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }

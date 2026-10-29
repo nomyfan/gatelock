@@ -57,7 +57,7 @@ The entry point, the CLI side of `gatelock run`, and the app's UI.
 
 ### `internal/redact`
 
-A streaming `io.Writer` that masks each secret's raw value, base64 (std and URL, with and without padding, and fragments of 8 bytes or more at the other two offsets), hex in both cases, URL query and path escaping, and JSON escaping. Every secret is masked however short. Matches span writes: only trailing bytes that could begin a pattern are held back, never released on a timer, and `Close` masks whatever is still held.
+A streaming `io.Writer` that masks each secret's raw value, base64 (std and URL, with and without padding, and fragments of 8 bytes or more at the other two offsets), hex in both cases, URL query and path escaping, and JSON escaping. Every secret is masked however short. A secret that is a URL-style DSN with a password (`dsn.go`: in its userinfo, or a query parameter named in `passwordParams`) is still matched whole, but only its passwords are replaced where it shows as written or URL- or JSON-escaped; its base64 and hex forms are masked whole. Matches span writes: only trailing bytes that could begin a pattern are held back, never released on a timer, and `Close` masks whatever is still held, whole.
 
 ### `internal/launch`
 

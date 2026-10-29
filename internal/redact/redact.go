@@ -41,22 +41,29 @@ type Writer struct {
 
 type pattern struct {
 	text []byte
-	mask []byte
+	// mask replaces text when all of it is matched. label replaces a
+	// beginning of text left at Close, since mask may show more of the
+	// value than was output.
+	mask  []byte
+	label []byte
 }
 
 // NewWriter returns a Writer that writes to dst. Every secret is masked,
-// however short; empty ones are ignored.
+// however short; empty ones are ignored. A secret that is a URL-style DSN
+// with a password, such as postgres://app:pw@host/db, has only the
+// password masked where the DSN shows whole, as written or URL- or
+// JSON-escaped; its other forms are masked whole.
 func NewWriter(dst io.Writer, secrets []Secret) *Writer {
 	seen := map[string]bool{}
 	var patterns []pattern
 	for _, s := range secrets {
-		mask := []byte("[REDACTED:" + s.Label + "]")
-		for _, text := range forms(s.Value) {
-			if text == "" || seen[text] {
+		label := "[REDACTED:" + s.Label + "]"
+		for _, f := range forms(string(s.Value), label) {
+			if f.text == "" || seen[f.text] {
 				continue
 			}
-			seen[text] = true
-			patterns = append(patterns, pattern{text: []byte(text), mask: mask})
+			seen[f.text] = true
+			patterns = append(patterns, pattern{text: []byte(f.text), mask: []byte(f.mask), label: []byte(label)})
 		}
 	}
 	slices.SortStableFunc(patterns, func(a, b pattern) int { return len(b.text) - len(a.text) })
@@ -67,23 +74,55 @@ func NewWriter(dst io.Writer, secrets []Secret) *Writer {
 	return w
 }
 
+// form is a text a secret may show as in output, and what replaces it.
+type form struct {
+	text string
+	mask string
+}
+
 // forms returns the texts a value may show as in output: itself, its whole
 // encodings, and the fragments of its base64 that stay the same wherever
-// the value sits in longer encoded data.
-func forms(v []byte) []string {
-	if len(v) == 0 {
+// the value sits in longer encoded data. Each is replaced by label, except
+// that only the passwords of a DSN are, in the forms that keep its shape.
+func forms(s, label string) []form {
+	if s == "" {
 		return nil
 	}
-	s := string(v)
-	out := []string{
-		s,
+	spans := passwordSpans(s)
+	var out []form
+	// These encode each byte or rune on its own, so the encoding of s is
+	// the encodings of its pieces joined, and a password can be replaced
+	// alone. The spans start and end next to ASCII bytes, so no rune is
+	// split.
+	for _, enc := range []func(string) string{
+		func(t string) string { return t },
+		url.QueryEscape,
+		url.PathEscape,
+		func(t string) string { return jsonEscape(t, true) },
+		func(t string) string { return jsonEscape(t, false) },
+	} {
+		mask := label
+		if spans != nil {
+			var b strings.Builder
+			prev := 0
+			for _, span := range spans {
+				b.WriteString(enc(s[prev:span[0]]))
+				b.WriteString(label)
+				prev = span[1]
+			}
+			b.WriteString(enc(s[prev:]))
+			mask = b.String()
+		}
+		out = append(out, form{enc(s), mask})
+	}
+
+	v := []byte(s)
+	whole := []string{
 		hex.EncodeToString(v),
 		strings.ToUpper(hex.EncodeToString(v)),
-		url.QueryEscape(s),
-		url.PathEscape(s),
 	}
 	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-		out = append(out, enc.EncodeToString(v))
+		whole = append(whole, enc.EncodeToString(v))
 	}
 	for _, enc := range []*base64.Encoding{base64.RawStdEncoding, base64.RawURLEncoding} {
 		for shift := range 3 {
@@ -93,19 +132,24 @@ func forms(v []byte) []string {
 			encoded := enc.EncodeToString(append(make([]byte, shift), v...))
 			start, end := (8*shift+5)/6, 8*(shift+len(v))/6
 			if end-start >= minFragment {
-				out = append(out, encoded[start:end])
+				whole = append(whole, encoded[start:end])
 			}
 		}
 	}
-	for _, escapeHTML := range []bool{true, false} {
-		var b bytes.Buffer
-		enc := json.NewEncoder(&b)
-		enc.SetEscapeHTML(escapeHTML)
-		enc.Encode(s)
-		quoted := strings.TrimSuffix(b.String(), "\n")
-		out = append(out, quoted[1:len(quoted)-1])
+	for _, text := range whole {
+		out = append(out, form{text, label})
 	}
 	return out
+}
+
+// jsonEscape returns s as it shows inside a JSON string.
+func jsonEscape(s string, escapeHTML bool) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(escapeHTML)
+	enc.Encode(s)
+	quoted := strings.TrimSuffix(b.String(), "\n")
+	return quoted[1 : len(quoted)-1]
 }
 
 // Write masks p, with what earlier writes held back, and writes what is
@@ -165,7 +209,7 @@ func (w *Writer) mask(b []byte, final bool) (out, rest []byte) {
 			out = append(out, full.mask...)
 			i += len(full.text)
 		case partial != nil:
-			return append(out, partial.mask...), nil
+			return append(out, partial.label...), nil
 		default:
 			out = append(out, b[i])
 			i++
