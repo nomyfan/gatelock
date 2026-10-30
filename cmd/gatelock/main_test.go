@@ -209,6 +209,17 @@ func TestSetEnvReplacesInEnviron(t *testing.T) {
 	}
 }
 
+// An activity found lost on opening has no end, so no time it took.
+func TestWhenLostWithoutEnd(t *testing.T) {
+	start := time.Now().Add(-time.Hour)
+	if got := when(history.Activity{StartedAt: start, Status: history.Lost}); strings.Contains(got, "·") {
+		t.Errorf("lost: %q", got)
+	}
+	if got := when(history.Activity{StartedAt: start, Status: history.Running}); !strings.HasSuffix(got, "1h0m0s") {
+		t.Errorf("running: %q", got)
+	}
+}
+
 // The lock button locks only an unlocked vault, and shows which it is.
 func TestLockButtonFollowsUnlock(t *testing.T) {
 	a := testApp(t)

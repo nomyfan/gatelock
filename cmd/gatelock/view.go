@@ -1282,15 +1282,19 @@ func statusText(r history.Activity) string {
 }
 
 // when says when an activity started, and how long it took or has taken.
+// An activity found lost on opening the history has no end, so how long it
+// took is not known.
 func when(r history.Activity) string {
-	end := r.EndedAt
-	if end.IsZero() {
-		end = time.Now()
-	}
-	took := end.Sub(r.StartedAt).Round(time.Second)
 	started := r.StartedAt.Local().Format("Jan 2 15:04")
 	if r.StartedAt.Local().YearDay() == time.Now().YearDay() {
 		started = r.StartedAt.Local().Format("15:04:05")
 	}
-	return started + "  ·  " + took.String()
+	end := r.EndedAt
+	if end.IsZero() {
+		if r.Status.Ended() {
+			return started
+		}
+		end = time.Now()
+	}
+	return started + "  ·  " + end.Sub(r.StartedAt).Round(time.Second).String()
 }
