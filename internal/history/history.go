@@ -312,30 +312,43 @@ func (s *Store) Clear() error {
 	s.mu.Unlock()
 	var errs []error
 	for _, id := range ended {
-		gone, err := s.remove(id)
-		if gone {
-			s.mu.Lock()
-			delete(s.activities, id)
-			s.mu.Unlock()
-		}
-		errs = append(errs, err)
+		errs = append(errs, s.remove(id))
 	}
 	s.onChange()
 	return errors.Join(errs...)
 }
 
+// Delete removes an ended activity, with its output; one not ended is
+// left as it is, so that it can still be stopped. As with Clear, an
+// activity whose meta.json could not be removed is kept.
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	r, ok := s.activities[id]
+	ended := ok && r.Status.Ended()
+	s.mu.Unlock()
+	if !ended {
+		return nil
+	}
+	err := s.remove(id)
+	s.onChange()
+	return err
+}
+
 // remove removes an activity's files: its output first, then its meta.json,
 // so that an activity whose output stays is still listed, and then what is
-// left. gone reports whether its meta.json was removed, and with it the
-// activity, which Open would no longer list.
-func (s *Store) remove(id string) (gone bool, err error) {
+// left. Once its meta.json is removed, which Open would no longer list,
+// the activity is no longer listed here either.
+func (s *Store) remove(id string) error {
 	dir := filepath.Join(s.dir, id)
 	for _, name := range []string{"output.log", "meta.json"} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return false, err
+			return err
 		}
 	}
-	return true, os.RemoveAll(dir)
+	s.mu.Lock()
+	delete(s.activities, id)
+	s.mu.Unlock()
+	return os.RemoveAll(dir)
 }
 
 // prune removes the oldest ended activities beyond keep, with s.mu held or

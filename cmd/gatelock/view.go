@@ -39,6 +39,10 @@ type viewState struct {
 	toast         string // shown in the next frame
 	// clearing is set while the user is asked to clear the ended activities.
 	clearing bool
+	// deleteActivity is the id of the activity to be deleted once the user
+	// confirms, while deletingActivity.
+	deleteActivity   string
+	deletingActivity bool
 
 	sidebarHidden bool
 	// headerInset is how far the pages' headers keep from the left.
@@ -1075,6 +1079,9 @@ func (a *app) activitiesPage(c *ui.Context) {
 	if confirmDialog(c, &v.clearing, "Clear ended activities?", "Their commands and output are deleted for good. Activities still running are kept.", "Cancel", "Clear") {
 		a.clearActivities()
 	}
+	if confirmDialog(c, &v.deletingActivity, "Delete this activity?", "Its command and output are deleted for good.", "Cancel", "Delete") {
+		a.deleteActivity(v.deleteActivity)
+	}
 	if len(v.activities) == 0 {
 		ui.Column(c).Grow(1).Center().Gap(t.Space(2)).Children(func() {
 			ui.Text(c, "No activities yet").FontSize(t.FontSize + 2).TextColor(t.TextMuted)
@@ -1103,6 +1110,15 @@ func (a *app) clearActivities() {
 		if !slices.ContainsFunc(v.activities, func(r history.Activity) bool { return r.ID == id }) {
 			delete(v.activityViews, id)
 		}
+	}
+}
+
+// deleteActivity removes an ended activity, and what the page kept of it.
+func (a *app) deleteActivity(id string) {
+	a.report(a.history.Delete(id))
+	a.refresh()
+	if !slices.ContainsFunc(a.view.activities, func(r history.Activity) bool { return r.ID == id }) {
+		delete(a.view.activityViews, id)
 	}
 }
 
@@ -1160,6 +1176,8 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 				if iconButton(c, "stop", stopIcon, label).Clicked() {
 					a.history.Stop(r.ID)
 				}
+			} else if iconButton(c, "delete", trashIcon, "Delete Activity…").Clicked() {
+				v.deleteActivity, v.deletingActivity = r.ID, true
 			}
 		})
 		if tr.Changed() && rv.open {

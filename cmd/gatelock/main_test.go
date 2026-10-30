@@ -354,6 +354,36 @@ func TestClearEndedActivities(t *testing.T) {
 	}
 }
 
+func TestDeleteActivity(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("npm run deploy")
+	// Only the activity ended has it; the one running has Stop.
+	if err := tt.Click("Delete Activity…"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Cancel"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("npm run deploy") {
+		t.Fatalf("deleted though canceled: %q", tt.Texts())
+	}
+	if err := tt.Click("Delete Activity…"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Delete"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("npm run dev") || tt.HasText("npm run deploy") || len(a.view.activityViews) != 0 {
+		t.Fatalf("texts %q, views %v", tt.Texts(), a.view.activityViews)
+	}
+	if _, ok := tt.Find("Delete Activity…"); ok {
+		t.Fatal("delete shown for the activity running")
+	}
+}
+
 func TestDeleteFromSidebarShowsOnHover(t *testing.T) {
 	a := testApp(t)
 	tt := ui.NewTester(a.mainView, 960, 640)

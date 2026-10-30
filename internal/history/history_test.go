@@ -2,8 +2,11 @@ package history
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -116,6 +119,40 @@ func TestClearKeepsActivitiesNotEnded(t *testing.T) {
 	s2, _ := Open(dir, func() {})
 	if list := s2.List(); len(list) != 1 || list[0].ID != running.ID() {
 		t.Fatalf("reopened with %+v", list)
+	}
+}
+
+func TestDeleteOnlyEnded(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, func() {})
+	running, _ := s.Begin("dev", []string{"serve"}, "/", "", func() {})
+	running.Authorized()
+	ended, _ := s.Begin("dev", []string{"x"}, "/", "", func() {})
+	ended.Exited(0)
+	kept, _ := s.Begin("dev", []string{"y"}, "/", "", func() {})
+	kept.Exited(0)
+	for _, id := range []string{running.ID(), ended.ID(), "unknown"} {
+		if err := s.Delete(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(list []Activity) (out []string) {
+		for _, r := range list {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	want := []string{running.ID(), kept.ID()}
+	if got := ids(s.List()); !slices.Equal(got, want) {
+		t.Fatalf("left %v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ended.ID())); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("its files: %v", err)
+	}
+	running.Exited(0)
+	s2, _ := Open(dir, func() {})
+	if got := ids(s2.List()); !slices.Equal(got, []string{kept.ID(), running.ID()}) {
+		t.Fatalf("reopened with %v", got)
 	}
 }
 
