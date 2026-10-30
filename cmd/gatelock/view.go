@@ -1137,7 +1137,7 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 		}
 		tr.Children(func() {
 			ui.Icon(c, chevronIcon).Size(12, 12).Shrink(0).TextColor(t.TextMuted).Rotate(90 * p.Progress())
-			statusDot(c, r)
+			statusIcon(c, r)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(t.Space(0.5)).Children(func() {
 				ui.Text(c, strings.Join(r.Argv, " ")).Font("monospace").SingleLine().Tooltip(strings.Join(r.Argv, " "))
 				ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(t.Space(1)).Children(func() {
@@ -1151,9 +1151,6 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 					ui.Text(c, about).MinWidth(0).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
 				})
 			})
-			if note := statusNote(r); note != "" {
-				ui.Text(c, note).FontSize(t.FontSize - 1).FontWeight(600).TextColor(statusColor(t, r)).SingleLine()
-			}
 			ui.Text(c, when(r)).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
 			if !r.Status.Ended() {
 				label := "Stop"
@@ -1189,38 +1186,68 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 	})
 }
 
-// statusDot shows an activity's status as a dot in a soft halo: a running
-// command's halo breathes, one waiting for the user to authorize it
-// ripples out, an ended one's stays still, as all do for less motion. The colors tell the statuses apart without it.
-func statusDot(c *ui.Context, r history.Activity) {
+// statusIcon shows an activity's status as an icon in its color: a lock
+// with a ring rippling out while it waits for the user to authorize it, an
+// arc going round while it runs, and for how it ended, a check, a cross, a
+// warning sign, a stop, a ban or a question mark. With less motion, the
+// ring and the arc stay still.
+func statusIcon(c *ui.Context, r history.Activity) {
 	t := c.Theme()
 	color := statusColor(t, r)
-	const size, core = 12, 6
-	dot := ui.Box(c.Key("status")).Size(size, size).Shrink(0).Label(statusText(r)).Tooltip(statusText(r))
+	const size = 14
+	box := ui.Box(c.Key("status")).Size(size, size).Shrink(0).Label(statusText(r)).Tooltip(statusText(r))
 	still := c.Preferences().ReduceMotion
-	// The halo moves as the dot is painted again, without the view built
-	// again.
-	dot.Draw(func(p *ui.Painter, rect ui.Rect) {
-		scale, alpha := float32(1), float32(0.3)
-		switch {
-		case still:
-		case r.Status == history.Running:
-			// Out to half again and back, fading, over 2s.
-			v := ui.Bounce(ui.CubicBezier(0.42, 0, 0.58, 1))(phase(p.Now(), 2*time.Second))
-			scale, alpha = 1+0.5*v, 0.35-0.25*v
-			p.AnimationFrame()
-		case r.Status == history.Authorizing:
-			// Out to more than twice and gone in three quarters of 1.6s,
-			// then still till it starts over.
-			v := ui.CubicBezier(0, 0, 0.2, 1)(min(phase(p.Now(), 1600*time.Millisecond)/0.75, 1))
-			scale, alpha = 1+1.2*v, 0.45*(1-v)
-			p.AnimationFrame()
-		}
+	// The ring and the arc move as the icon is painted again, without the
+	// view built again.
+	box.Draw(func(p *ui.Painter, rect ui.Rect) {
 		cx, cy := rect.X+rect.W/2, rect.Y+rect.H/2
+		// The icons' circle and stroke, from their 16-unit box.
+		radius, width := float32(6.5*size/16), float32(1.3*size/16)
 		var circle ui.Path
-		p.FillPath(circle.Circle(cx, cy, size/2*scale), color.Alpha(alpha))
-		p.FillPath(circle.Reset().Circle(cx, cy, core/2), color)
+		switch r.Status {
+		case history.Running:
+			p.StrokePath(circle.Circle(cx, cy, radius), width, color.Alpha(0.25))
+			turn := float32(0)
+			if !still {
+				turn = 360 * phase(p.Now(), time.Second)
+				p.AnimationFrame()
+			}
+			p.Transform(ui.Rotation(turn), cx, cy, func() {
+				p.StrokePath(circle.Reset().Circle(cx, cy, radius).Cap(ui.RoundCap).Trim(0, 0.3), width, color)
+			})
+			return
+		case history.Authorizing:
+			if !still {
+				// Out to half again and gone in three quarters of 1.6s,
+				// then still till it starts over.
+				v := ui.CubicBezier(0, 0, 0.2, 1)(min(phase(p.Now(), 1600*time.Millisecond)/0.75, 1))
+				p.StrokePath(circle.Circle(cx, cy, size/2*(1+0.5*v)), width, color.Alpha(0.5*(1-v)))
+				p.AnimationFrame()
+			}
+		}
+		p.Icon(statusGlyph(r), rect, color)
 	})
+}
+
+// statusGlyph is the icon for an activity's status, other than running,
+// which statusIcon draws itself.
+func statusGlyph(r history.Activity) *ui.SVG {
+	switch r.Status {
+	case history.Authorizing:
+		return lockIcon
+	case history.Exited:
+		if r.ExitCode == 0 {
+			return succeededIcon
+		}
+		return exitedIcon
+	case history.Failed:
+		return failedIcon
+	case history.Denied:
+		return deniedIcon
+	case history.Stopped:
+		return stoppedIcon
+	}
+	return lostIcon
 }
 
 // phase is how far along a loop of period now is, from 0 to 1.
@@ -1231,7 +1258,7 @@ func phase(now time.Time, period time.Duration) float32 {
 func statusColor(t *ui.Theme, r history.Activity) ui.Color {
 	switch r.Status {
 	case history.Running, history.Authorizing:
-		// The accent is too near the danger red for a dot to tell apart. The motion tells these two apart.
+		// Not the accent, too near the danger red to tell apart.
 		return t.Warning
 	case history.Exited:
 		if r.ExitCode == 0 {
@@ -1244,25 +1271,7 @@ func statusColor(t *ui.Theme, r history.Activity) ui.Color {
 	return t.TextMuted
 }
 
-// statusNote says what the dot cannot: the code a command exited with,
-// unless 0, or how an activity ended otherwise. It is "" for an activity
-// going on or exited with 0.
-func statusNote(r history.Activity) string {
-	switch r.Status {
-	case history.Running:
-		return ""
-	case history.Authorizing:
-		return "waiting"
-	case history.Exited:
-		if r.ExitCode == 0 {
-			return ""
-		}
-		return fmt.Sprintf("exit %d", r.ExitCode)
-	}
-	return string(r.Status)
-}
-
-// statusText describes an activity's status in full, for the dot's tooltip.
+// statusText describes an activity's status in full, for the icon's tooltip.
 func statusText(r history.Activity) string {
 	switch r.Status {
 	case history.Authorizing:

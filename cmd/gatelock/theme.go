@@ -88,6 +88,14 @@ var (
 	chevronIcon    = icon(`<path d="M6 3.5L10.5 8 6 12.5"/>`)
 	checkIcon      = icon(`<path d="M3 8.5l3.5 3.5L13 4.5"/>`)
 	closeIcon      = icon(`<path d="M4 4l8 8M12 4l-8 8"/>`)
+
+	// An activity's status, beside it in the list.
+	succeededIcon = icon(`<circle cx="8" cy="8" r="6.5"/><path d="M5.2 8.2l1.9 1.9 3.7-3.9"/>`)
+	exitedIcon    = icon(`<circle cx="8" cy="8" r="6.5"/><path d="M5.9 5.9l4.2 4.2M10.1 5.9l-4.2 4.2"/>`)
+	failedIcon    = icon(`<path d="M8 1.9l6.4 11.4H1.6z"/><path d="M8 6.4v3.1M8 11.3v.1"/>`)
+	deniedIcon    = icon(`<circle cx="8" cy="8" r="6.5"/><path d="M3.4 12.6l9.2-9.2"/>`)
+	stoppedIcon   = icon(`<circle cx="8" cy="8" r="6.5"/><rect x="5.8" y="5.8" width="4.4" height="4.4" rx=".6"/>`)
+	lostIcon      = icon(`<circle cx="8" cy="8" r="6.5"/><path d="M6.2 6.3a1.9 1.9 0 1 1 2.6 1.8c-.5.2-.8.6-.8 1.1v.3M8 11.3v.1"/>`)
 )
 
 var (
