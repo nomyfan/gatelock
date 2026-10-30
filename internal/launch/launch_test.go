@@ -91,18 +91,32 @@ func TestCommandNotFound(t *testing.T) {
 	}
 }
 
-// groupGone reports whether no process is left in the group.
-func groupGone(pgid int) bool { return syscall.Kill(-pgid, 0) == syscall.ESRCH }
+// groupGone reports whether no process is left in the group, within a
+// second: Run returns once the shell is reaped, and its children, killed
+// with it but now launchd's, are reaped a moment later.
+func groupGone(pgid int) bool {
+	for range 100 {
+		if syscall.Kill(-pgid, 0) == syscall.ESRCH {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
 
 func TestStopKillsProcessTree(t *testing.T) {
 	stop := make(chan struct{})
 	var pgid int
+	started := make(chan struct{})
 	go func() {
-		time.Sleep(200 * time.Millisecond)
+		<-started
+		time.Sleep(200 * time.Millisecond) // let the shell exec
 		close(stop)
 	}()
-	code, err := Run(Spec{Argv: sh("sleep 30 & sleep 30; wait"), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}},
-		func(id int) { pgid = id }, stop)
+	// The shell execs the last sleep: bash, waiting for a child that the
+	// same SIGTERM kills, now and then misses its own and exits 0.
+	code, err := Run(Spec{Argv: sh("sleep 30 & exec sleep 30"), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}},
+		func(id int) { pgid = id; close(started) }, stop)
 	if err != nil || code != 128+int(syscall.SIGTERM) {
 		t.Fatalf("code %d, err %v", code, err)
 	}
