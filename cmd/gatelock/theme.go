@@ -12,11 +12,11 @@ import (
 // kind.
 var lightTheme, darkTheme = func() (light, dark *ui.Theme) {
 	light = ui.LightTheme()
-	light.Background = ui.Hex("#faf8f5")
-	light.Surface = ui.Hex("#efeae4")
-	light.SurfaceHover = ui.Hex("#e7e0d8")
-	light.SurfacePressed = ui.Hex("#e0d6cc")
-	light.Border = ui.Hex("#cbbdae")
+	light.Background = ui.Hex("#fcfbf9")
+	light.Surface = ui.Hex("#f5f2ef")
+	light.SurfaceHover = ui.Hex("#ebe6e0")
+	light.SurfacePressed = ui.Hex("#e3dcd4")
+	light.Border = ui.Hex("#e8e2da")
 	light.Text = ui.Hex("#45413d")
 	light.TextMuted = ui.Hex("#8a837b")
 	light.Accent = ui.Hex("#b8622a")
@@ -26,7 +26,7 @@ var lightTheme, darkTheme = func() (light, dark *ui.Theme) {
 	light.Danger = ui.Hex("#b75051")
 	light.Warning = ui.Hex("#b3760f")
 	light.Success = ui.Hex("#507c39")
-	light.Selection = ui.Hex("#d5cbc2")
+	light.Selection = ui.Hex("#dfd7cd")
 	light.Focus = light.Accent.Alpha(0.5)
 	light.Scrollbar = light.Text.Alpha(0.3)
 	// Compact, so that text controls stand as tall as iconButtons, and as
