@@ -146,11 +146,22 @@ func (a *app) beforeQuit(e *mygo.QuitEvent) {
 }
 
 // refreshLoop picks up changes to the vaults and the activities, at most
-// ten times a second, as output may come far more often.
+// ten times a second, as output may come far more often. While any activity
+// has yet to end, it also builds the window again each second, for how long
+// each has taken, which nothing else would report.
 func (a *app) refreshLoop() {
-	for range time.Tick(100 * time.Millisecond) {
+	var last time.Time
+	for now := range time.Tick(100 * time.Millisecond) {
 		if a.dirty.Swap(false) {
+			last = now
 			mygo.RunOnMain(a.refresh)
+		} else if now.Sub(last) >= time.Second && a.history.Running() > 0 {
+			last = now
+			mygo.RunOnMain(func() {
+				if a.win != nil {
+					a.win.Invalidate()
+				}
+			})
 		}
 	}
 }
