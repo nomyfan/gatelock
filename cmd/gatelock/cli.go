@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,15 @@ const bundleID = "dev.callcc.gatelock"
 // runs the command with them in its environment, masks them in its output,
 // and exits as the command does.
 func runCommand(args []string) int {
+	noRecordOutput := len(args) > 0 && args[0] == "--no-record-output"
+	if noRecordOutput {
+		args = args[1:]
+	}
+	// No vault's name begins with "-".
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		fmt.Fprintf(os.Stderr, "gatelock: unknown option %s\n%s\n", args[0], usage)
+		return exitGatelock
+	}
 	if len(args) > 1 && args[1] == "--" {
 		args = append(args[:1], args[2:]...)
 	}
@@ -52,7 +62,7 @@ func runCommand(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	session, secrets, err := ipc.Run(nc, ipc.RunRequest{Vault: name, Argv: argv, Cwd: cwd})
+	session, secrets, err := ipc.Run(nc, ipc.RunRequest{Vault: name, Argv: argv, Cwd: cwd, NoRecordOutput: noRecordOutput})
 	if err != nil {
 		return fail(err)
 	}
@@ -65,6 +75,10 @@ func runCommand(args []string) int {
 			masks = append(masks, redact.Secret{Label: name + "/" + s.Key, Value: s.Value})
 		}
 	}
+	var record io.Writer = session
+	if noRecordOutput {
+		record = nil
+	}
 	code, err := launch.Run(launch.Spec{
 		Argv:   argv,
 		Cwd:    cwd,
@@ -73,7 +87,7 @@ func runCommand(args []string) int {
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
-		Record: session,
+		Record: record,
 	}, session.Started, session.Stop())
 	if err != nil {
 		session.Failed(err)

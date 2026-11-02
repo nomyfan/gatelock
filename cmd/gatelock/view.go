@@ -1196,6 +1196,9 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 			out := strings.TrimSuffix(rv.output, "\n")
 			if out == "" {
 				out = "(no output)"
+				if r.OutputNotRecorded {
+					out = "(output not recorded)"
+				}
 			}
 			ui.Scroll(c.Key("output")).TrackScroll(&rv.scroll).MaxHeight(280).Background(t.Background).Border(1, t.Border).Radius(t.Radius).Children(func() {
 				ui.Text(c, out).Font("monospace").FontSize(t.FontSize-1).Selectable().Wrap().Padding(t.Space(2), t.Space(3))

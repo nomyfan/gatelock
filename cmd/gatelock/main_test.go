@@ -77,11 +77,11 @@ func testApp(t *testing.T) *app {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec, _ := h.Begin("prod-api", []string{"npm", "run", "deploy"}, "/work/api", caller.Codex, func() {})
+	rec, _ := h.Begin("prod-api", []string{"npm", "run", "deploy"}, "/work/api", caller.Codex, false, func() {})
 	rec.Authorized()
 	rec.Write([]byte("deploying with [REDACTED:prod-api/STRIPE_KEY]\n"))
 	rec.Exited(0)
-	running, _ := h.Begin("prod-api", []string{"npm", "run", "dev"}, "/work/api", caller.ClaudeCode, func() {})
+	running, _ := h.Begin("prod-api", []string{"npm", "run", "dev"}, "/work/api", caller.ClaudeCode, false, func() {})
 	running.Authorized()
 
 	a := &app{home: dir, vaults: v, history: h}
@@ -172,7 +172,7 @@ func TestAddEnv(t *testing.T) {
 func TestStopFromActivitiesPage(t *testing.T) {
 	a := testApp(t)
 	stopped := false
-	rec, _ := a.history.Begin("prod-api", []string{"sleep", "60"}, "/", "", func() { stopped = true })
+	rec, _ := a.history.Begin("prod-api", []string{"sleep", "60"}, "/", "", false, func() { stopped = true })
 	rec.Authorized()
 	a.refresh()
 	tt := ui.NewTester(a.mainView, 960, 640)
@@ -199,6 +199,27 @@ func TestActivitiesOpenAndCloseOnTheirOwn(t *testing.T) {
 	tt.Advance(time.Second)
 	if tt.HasText("deploying with [REDACTED:prod-api/STRIPE_KEY]") || !tt.HasText("(no output)") {
 		t.Fatalf("only npm run dev should be open: %q", tt.Texts())
+	}
+}
+
+func TestOutputNotRecorded(t *testing.T) {
+	a := testApp(t)
+	rec, _ := a.history.Begin("prod-api", []string{"npm", "run", "serve"}, "/work/api", "", true, func() {})
+	rec.Authorized()
+	a.refresh()
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Frame()
+	if err := tt.Click("npm run serve"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("(output not recorded)") {
+		t.Fatalf("texts %q", tt.Texts())
+	}
+}
+
+func TestRunUnknownOption(t *testing.T) {
+	if code := runCommand([]string{"--quiet", "prod-api", "true"}); code != exitGatelock {
+		t.Fatalf("code %d", code)
 	}
 }
 

@@ -182,6 +182,40 @@ func TestRun(t *testing.T) {
 	}
 }
 
+// The app keeps none of the output of a run asked not to record it, even
+// if the CLI sends it.
+func TestNoRecordOutput(t *testing.T) {
+	a := startApp(t, &auth{})
+	nc, err := Dial(a.socket, noStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := []string{"echo", "hi"}
+	s, _, err := Run(nc, RunRequest{Vault: "prod", Argv: argv, Cwd: a.cwd, NoRecordOutput: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	code, err := launch.Run(launch.Spec{
+		Argv: argv, Cwd: a.cwd, Env: []string{"PATH=/usr/bin:/bin"},
+		Stdout: &stdout, Stderr: &bytes.Buffer{}, Record: s,
+	}, s.Started, s.Stop())
+	if err != nil || code != 0 {
+		t.Fatalf("code %d, err %v", code, err)
+	}
+	s.Exit(code)
+	if stdout.String() != "hi\n" {
+		t.Fatalf("stdout %q", stdout.String())
+	}
+	r := waitFor(t, a.history, history.Exited)
+	if !r.OutputNotRecorded {
+		t.Fatalf("activity %+v", r)
+	}
+	if out, _ := a.history.Output(r.ID); len(out) != 0 {
+		t.Fatalf("recorded %q", out)
+	}
+}
+
 func TestCommandNotFound(t *testing.T) {
 	a := startApp(t, &auth{})
 	if code, _, err := runCLI(t, a, "gatelock-no-such-command"); code != 127 || err != nil {

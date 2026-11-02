@@ -107,6 +107,10 @@ The shell expands $VARS before Gatelock adds the env, so to use one in the comma
 
     ` + command + ` run <vault> -- sh -c 'curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com'
 
+For a command that runs for long, such as a dev server, add --no-record-output before the vault, so that Gatelock does not keep its output:
+
+    ` + command + ` run --no-record-output <vault> -- npm run dev
+
 Ask the user which vault to use. Do not try to print or read the values.
 `
 }

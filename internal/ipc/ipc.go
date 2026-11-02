@@ -42,9 +42,10 @@ type frame struct {
 	Type string `json:"type"`
 
 	// run
-	Vault string   `json:"vault,omitempty"`
-	Argv  []string `json:"argv,omitempty"`
-	Cwd   string   `json:"cwd,omitempty"`
+	Vault          string   `json:"vault,omitempty"`
+	Argv           []string `json:"argv,omitempty"`
+	Cwd            string   `json:"cwd,omitempty"`
+	NoRecordOutput bool     `json:"no_record_output,omitempty"`
 	// granted
 	ActivityID string         `json:"activity_id,omitempty"`
 	Env        []vault.Secret `json:"env,omitempty"`
@@ -168,7 +169,7 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var mu sync.Mutex
 	granted, stopped := false, false
-	rec, err := h.Begin(req.Vault, req.Argv, req.Cwd, by, func() {
+	rec, err := h.Begin(req.Vault, req.Argv, req.Cwd, by, req.NoRecordOutput, func() {
 		mu.Lock()
 		defer mu.Unlock()
 		if granted {
@@ -242,7 +243,9 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 			pgid = f.PGID
 			rec.Started(pgid)
 		case "output":
-			rec.Write(f.Data)
+			if !req.NoRecordOutput {
+				rec.Write(f.Data)
+			}
 		case "failed":
 			rec.Write([]byte("gatelock: " + f.Message + "\n"))
 			rec.End(history.Failed)
@@ -316,6 +319,9 @@ type RunRequest struct {
 	Vault string
 	Argv  []string
 	Cwd   string
+	// NoRecordOutput asks the app not to keep the command's output; the
+	// activity is recorded still, and can be stopped.
+	NoRecordOutput bool
 }
 
 // Session is a run the app authorized, as the CLI reports it.
@@ -353,7 +359,7 @@ func Dial(socketPath string, start func() error) (net.Conn, error) {
 // vault.ErrNotFound, vault.ErrDenied, or another with the app's message.
 func Run(nc net.Conn, req RunRequest) (*Session, []vault.Secret, error) {
 	c := newConn(nc)
-	if err := c.write(frame{Type: "run", Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd}); err != nil {
+	if err := c.write(frame{Type: "run", Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd, NoRecordOutput: req.NoRecordOutput}); err != nil {
 		nc.Close()
 		return nil, nil, err
 	}

@@ -49,6 +49,9 @@ type Activity struct {
 	// Caller names the program that ran it, if known: a hint, as a
 	// program can pass for another.
 	Caller string `json:"caller,omitempty"`
+	// OutputNotRecorded is set when `gatelock run` was asked not to record
+	// the command's output, as for a dev server that runs for hours.
+	OutputNotRecorded bool `json:"output_not_recorded,omitempty"`
 }
 
 const (
@@ -116,17 +119,19 @@ func Open(dir string, onChange func()) (*Store, error) {
 }
 
 // Begin records a command's activity, waiting to be authorized. caller
-// names the program that ran it, or is empty; stop asks the command to
-// stop.
-func (s *Store) Begin(vault string, argv []string, cwd, caller string, stop func()) (*Record, error) {
+// names the program that ran it, or is empty; outputNotRecorded says that
+// the command's output will not be written to it; stop asks the command
+// to stop.
+func (s *Store) Begin(vault string, argv []string, cwd, caller string, outputNotRecorded bool, stop func()) (*Record, error) {
 	r := &Activity{
-		ID:        newID(),
-		Vault:     vault,
-		Argv:      argv,
-		Cwd:       cwd,
-		Caller:    caller,
-		StartedAt: time.Now().UTC(),
-		Status:    Authorizing,
+		ID:                newID(),
+		Vault:             vault,
+		Argv:              argv,
+		Cwd:               cwd,
+		Caller:            caller,
+		OutputNotRecorded: outputNotRecorded,
+		StartedAt:         time.Now().UTC(),
+		Status:            Authorizing,
 	}
 	if err := os.Mkdir(filepath.Join(s.dir, r.ID), 0o700); err != nil {
 		return nil, err
