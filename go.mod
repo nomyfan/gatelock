@@ -7,7 +7,7 @@ tool github.com/egoist/mygo/cmd/mygo
 require (
 	filippo.io/age v1.3.2
 	github.com/ebitengine/purego v0.11.1
-	github.com/egoist/mygo v0.7.1
+	github.com/egoist/mygo v0.8.1
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/sys v0.49.0
 )
