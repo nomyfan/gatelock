@@ -9,14 +9,14 @@ import (
 )
 
 // The app's colors are Vellum's: a warm theme in a light and a dark
-// kind.
+// kind, its app colors (its web preview's).
 var lightTheme, darkTheme = func() (light, dark *ui.Theme) {
 	light = ui.LightTheme()
-	light.Background = ui.Hex("#faf8f5")
-	light.Surface = ui.Hex("#f2efec")
-	light.SurfaceHover = ui.Hex("#ebe5de")
-	light.SurfacePressed = ui.Hex("#e3dcd4")
-	light.Border = ui.Hex("#e8e2da")
+	light.Background = ui.Hex("#f8f3ea")
+	light.Surface = ui.Hex("#f1eae1")
+	light.SurfaceHover = ui.Hex("#e9e0d5")
+	light.SurfacePressed = ui.Hex("#e1d7cb")
+	light.Border = ui.Hex("#e5ddd1")
 	light.Text = ui.Hex("#45413d")
 	light.TextMuted = ui.Hex("#6f6861")
 	light.Accent = ui.Hex("#b1632f")
@@ -24,9 +24,9 @@ var lightTheme, darkTheme = func() (light, dark *ui.Theme) {
 	light.AccentPressed = ui.Hex("#c7906a")
 	light.AccentText = ui.Hex("#ffffff")
 	light.Danger = ui.Hex("#b75051")
-	light.Warning = ui.Hex("#8e6c00")
+	light.Warning = ui.Hex("#9c6400")
 	light.Success = ui.Hex("#507c39")
-	light.Selection = ui.Hex("#dfd7cd")
+	light.Selection = ui.Hex("#dcd2c6")
 	light.Focus = light.Accent.Alpha(0.5)
 	light.Scrollbar = light.Text.Alpha(0.3)
 	// Compact, so that text controls stand as tall as iconButtons, and as
@@ -36,7 +36,7 @@ var lightTheme, darkTheme = func() (light, dark *ui.Theme) {
 	dark = ui.DarkTheme()
 	dark.Background = ui.Hex("#1a1816")
 	dark.Surface = ui.Hex("#151311")
-	dark.SurfaceHover = ui.Hex("#24221f")
+	dark.SurfaceHover = ui.Hex("#2c2925")
 	dark.SurfacePressed = ui.Hex("#413b35")
 	dark.Border = ui.Hex("#3e3934")
 	dark.Text = ui.Hex("#d8d3cb")
