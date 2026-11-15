@@ -472,6 +472,37 @@ func TestAddMultilineEnv(t *testing.T) {
 	}
 }
 
+// Values imported while the vault's are shown show too, the new ones and
+// those replaced; while hidden, they stay hidden.
+func TestImportKeepsValuesShown(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageVault("prod-api")
+	unlock(t, a, "prod-api")
+	a.view.revealedVault, a.view.revealed = "prod-api", map[string]string{"PORT": "5432", "STRIPE_KEY": "sk_live_1"}
+	values, err := a.vaults.Import("prod-api", []byte("PORT=8080\nNEW_TOKEN=tok_new_1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.imported("prod-api", "/work/api/.env", values)
+	a.view.askRemove = false
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if !tt.HasText("tok_new_1") || !tt.HasText("8080") || tt.HasText("5432") || !tt.HasText("sk_live_1") {
+		t.Fatalf("values shown: %q", tt.Texts())
+	}
+	if got := strings.Join(a.view.imported, ", "); got != "NEW_TOKEN, PORT" {
+		t.Fatalf("imported %q", got)
+	}
+
+	a.hideValues()
+	values, _ = a.vaults.Import("prod-api", []byte("OTHER=tok_other_1\n"))
+	a.imported("prod-api", "/work/api/.env", values)
+	a.view.askRemove = false
+	tt = ui.NewTester(a.mainView, 960, 640)
+	if a.view.revealed != nil || tt.HasText("tok_other_1") {
+		t.Fatalf("values shown while hidden: %q", tt.Texts())
+	}
+}
+
 func TestEditEnvInline(t *testing.T) {
 	a := testApp(t)
 	a.view.page = pageVault("prod-api")

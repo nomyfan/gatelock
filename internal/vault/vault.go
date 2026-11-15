@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -459,27 +460,24 @@ func (s *Store) DeleteEnv(name, key string) error {
 }
 
 // Import sets the values of a .env file in the vault, replacing those
-// of the same keys, and returns the keys set. Nothing is set if any key is
-// invalid. Removing the file is up to the caller.
-func (s *Store) Import(name string, dotenv []byte) ([]string, error) {
+// of the same keys, and returns the values set, by key. Nothing is set if
+// any key is invalid. Removing the file is up to the caller.
+func (s *Store) Import(name string, dotenv []byte) (map[string]string, error) {
 	values, err := godotenv.UnmarshalBytes(dotenv)
 	if err != nil {
 		return nil, err
 	}
-	var keys []string
 	for key := range values {
 		if !keyPattern.MatchString(key) {
 			return nil, fmt.Errorf("%w: %s", ErrInvalidKey, key)
 		}
-		keys = append(keys, key)
 	}
-	slices.Sort(keys)
-	for _, key := range keys {
+	for _, key := range slices.Sorted(maps.Keys(values)) {
 		if err := s.SetEnv(name, key, []byte(values[key])); err != nil {
 			return nil, err
 		}
 	}
-	return keys, nil
+	return values, nil
 }
 
 // dotenvEscaper escapes a value within double quotes, as godotenv reads

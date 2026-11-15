@@ -477,9 +477,9 @@ func TestValidation(t *testing.T) {
 func TestImport(t *testing.T) {
 	v, _ := Open(t.TempDir(), &fakeKeychain{items: map[string]string{}}, &fakeAuth{})
 	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
-	keys, err := v.Import("dev", []byte("# comment\nexport TOKEN=\"sk live\"\nURL=postgres://u:p@h/db\n"))
-	if err != nil || len(keys) != 2 || keys[0] != "TOKEN" || keys[1] != "URL" {
-		t.Fatalf("got %v, %v", keys, err)
+	values, err := v.Import("dev", []byte("# comment\nexport TOKEN=\"sk live\"\nURL=postgres://u:p@h/db\n"))
+	if err != nil || len(values) != 2 || values["TOKEN"] != "sk live" || values["URL"] != "postgres://u:p@h/db" {
+		t.Fatalf("got %v, %v", values, err)
 	}
 	secrets, _ := v.Resolve(context.Background(), "dev", "test")
 	if string(secrets[0].Value) != "sk live" || string(secrets[1].Value) != "postgres://u:p@h/db" {

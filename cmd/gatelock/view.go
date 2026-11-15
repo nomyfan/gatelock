@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"slices"
@@ -751,19 +752,36 @@ func (a *app) importDotenv(name string) {
 			return
 		}
 		data, err := os.ReadFile(paths[0])
-		var keys []string
+		var values map[string]string
 		if err == nil {
-			keys, err = a.vaults.Import(name, data)
+			values, err = a.vaults.Import(name, data)
 		}
 		mygo.RunOnMain(func() {
 			if err != nil {
 				a.view.toast = "Import failed: " + err.Error()
+				// Some values may have been set before it failed, which
+				// those shown would no longer match.
+				if a.view.revealedVault == name {
+					a.hideValues()
+				}
+				a.refresh()
 				return
 			}
-			a.view.imported, a.view.importedFrom, a.view.askRemove = keys, paths[0], true
-			a.refresh()
+			a.imported(name, paths[0], values)
 		})
 	}()
+}
+
+// imported takes in the values imported into the vault from the file at
+// path: while the vault's values are shown, so are these, the new ones and
+// those replaced alike; then it offers to delete the file.
+func (a *app) imported(name, path string, values map[string]string) {
+	v := &a.view
+	if v.revealed != nil && v.revealedVault == name {
+		maps.Copy(v.revealed, values)
+	}
+	v.imported, v.importedFrom, v.askRemove = slices.Sorted(maps.Keys(values)), path, true
+	a.refresh()
 }
 
 // createForm is the New Vault dialog's.
