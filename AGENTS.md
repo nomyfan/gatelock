@@ -89,6 +89,8 @@ The record of activities, owned by the app: each activity's meta and its masked 
 
 `resources/` holds assets shipped inside the app bundle (the app icon, `icon.png`, which MyGo picks up by that name); `design/` holds source files that are not shipped, the icon's artwork `icon.svg` and the menu bar icon's `tray.svg`, the same hedgehog as a silhouette with its paths copied from `icon.svg`; `scripts/` holds tools for maintaining the repository, such as `make-icon.sh`, which renders `resources/icon.png` from `design/icon.svg` on the macOS icon grid, and `make-tray-icon.sh`, which renders `design/tray.svg` into `cmd/gatelock/icons/tray.png`, which the app embeds (`trayIcon`) as a template image for macOS to tint.
 
+`.github/workflows/ci.yml` runs `go tool mygo vet .` and the tests on macOS, on pushes to `main` and on pull requests.
+
 `build/` holds `go tool mygo build`'s output and `.mygo/` its development builds (both ignored); `.scratchpad/` (ignored) holds throwaway experiments.
 
 ## Notes
