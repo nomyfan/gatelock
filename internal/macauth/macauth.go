@@ -4,6 +4,7 @@ package macauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -23,6 +24,11 @@ const (
 	errUserCancel           = -2
 	errSystemCancel         = -4
 )
+
+// ErrSystemCancel is the system dismissing the question, as when another
+// app comes to the front: the user did not answer. It is ErrDenied too, as
+// at the Mac alone, the question has gone unanswered.
+var ErrSystemCancel = errors.New("canceled by the system")
 
 var loadOnce = sync.OnceValue(func() error {
 	for _, fw := range []string{
@@ -76,7 +82,9 @@ func ConfirmUser(ctx context.Context, reason string) error {
 	switch {
 	case r.ok:
 		return nil
-	case r.code == errUserCancel || r.code == errAuthenticationFailed || r.code == errSystemCancel:
+	case r.code == errSystemCancel:
+		return fmt.Errorf("%w: %w: %s", vault.ErrDenied, ErrSystemCancel, r.desc)
+	case r.code == errUserCancel || r.code == errAuthenticationFailed:
 		return fmt.Errorf("%w: %s", vault.ErrDenied, r.desc)
 	default:
 		return fmt.Errorf("authentication failed (%d): %s", r.code, r.desc)

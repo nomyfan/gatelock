@@ -60,6 +60,25 @@ func TestStoppedByUser(t *testing.T) {
 	}
 }
 
+func TestDeniedKeepsWhereAndWhy(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir, func() {})
+	rec, _ := s.Begin("prod", []string{"make", "deploy"}, "/", "", false, func() {})
+	rec.Denied("Telegram", "use staging")
+	want := func(s *Store) {
+		t.Helper()
+		if r := s.List()[0]; r.Status != Denied || r.DeniedBy != "Telegram" || r.DenyReason != "use staging" || r.EndedAt.IsZero() {
+			t.Fatalf("got %+v", r)
+		}
+	}
+	want(s)
+	s2, err := Open(dir, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want(s2)
+}
+
 func TestOpenMarksLeftoverActivitiesLost(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := Open(dir, func() {})

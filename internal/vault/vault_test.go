@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,10 +29,15 @@ type fakeAuth struct {
 	asks     atomic.Int32
 	// hold, if not nil, keeps ConfirmUser waiting until it is closed.
 	hold chan struct{}
+	// prompts are those ConfirmUser was asked.
+	prompts []Prompt
 }
 
-func (a *fakeAuth) ConfirmUser(ctx context.Context, reason string) error {
+func (a *fakeAuth) ConfirmUser(ctx context.Context, p Prompt) error {
 	a.confirms.Add(1)
+	a.mu.Lock()
+	a.prompts = append(a.prompts, p)
+	a.mu.Unlock()
 	if a.hold != nil {
 		select {
 		case <-a.hold:
@@ -607,5 +614,102 @@ func TestDotenvReadsBackAsItWas(t *testing.T) {
 		if string(s.Value) != want[s.Key] {
 			t.Errorf("%s: %q, want %q", s.Key, s.Value, want[s.Key])
 		}
+	}
+}
+
+func TestDeniedErrorSaysWhereAndWhy(t *testing.T) {
+	for _, tt := range []struct {
+		err  *DeniedError
+		want string
+	}{
+		{&DeniedError{}, "authorization denied"},
+		{&DeniedError{By: "Telegram"}, "authorization denied in Telegram"},
+		{&DeniedError{By: "Telegram", Reason: "use staging"}, "authorization denied in Telegram: use staging"},
+	} {
+		if got := tt.err.Error(); got != tt.want {
+			t.Errorf("Error() = %q, want %q", got, tt.want)
+		}
+		if !errors.Is(fmt.Errorf("wrapped: %w", tt.err), ErrDenied) {
+			t.Errorf("%v is not ErrDenied", tt.err)
+		}
+	}
+}
+
+func TestRemoteOnlyForCommandsWithTheKeychain(t *testing.T) {
+	dir := t.TempDir()
+	auth := &fakeAuth{pass: "pw"}
+	v, err := Open(dir, &fakeKeychain{items: map[string]string{}}, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
+	v.Create("plain", []byte("pw"), false, Policy{Mode: Every})
+	last := func() Prompt {
+		t.Helper()
+		auth.mu.Lock()
+		defer auth.mu.Unlock()
+		if len(auth.prompts) == 0 {
+			t.Fatal("not asked")
+		}
+		p := auth.prompts[len(auth.prompts)-1]
+		auth.prompts = nil
+		return p
+	}
+
+	v.ResolveRemote(context.Background(), "dev", "run make")
+	if p := last(); p.Remote || p.Vault != "dev" || p.Reason != "run make" {
+		t.Fatalf("vault not allowing it: asked %+v", p)
+	}
+	if err := v.SetRemote("dev", true); err != nil {
+		t.Fatal(err)
+	}
+	if vt, _ := v.Vault("dev"); !vt.Remote {
+		t.Fatal("Remote not reported")
+	}
+	v.ResolveRemote(context.Background(), "dev", "run make")
+	if p := last(); !p.Remote {
+		t.Fatalf("command: asked %+v", p)
+	}
+	v.Resolve(context.Background(), "dev", "show the values")
+	if p := last(); p.Remote {
+		t.Fatalf("the user in the app: asked %+v", p)
+	}
+	v.ChangePassphrase(context.Background(), "dev", []byte("pw"))
+	if p := last(); p.Remote {
+		t.Fatalf("changing the passphrase: asked %+v", p)
+	}
+
+	// Without the Keychain, the passphrase is asked for at the Mac.
+	v.SetRemote("plain", true)
+	asks := auth.asks.Load()
+	if _, err := v.ResolveRemote(context.Background(), "plain", "run make"); err != nil {
+		t.Fatal(err)
+	}
+	if auth.asks.Load() != asks+1 || len(auth.prompts) != 0 {
+		t.Fatal("without the Keychain, not asked for the passphrase alone")
+	}
+
+	v2, err := Open(dir, &fakeKeychain{items: map[string]string{}}, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vt, _ := v2.Vault("dev"); !vt.Remote {
+		t.Fatal("Remote not kept")
+	}
+}
+
+func TestRemoteLeftOutOfTheMetaWhileOff(t *testing.T) {
+	dir := t.TempDir()
+	v, _ := Open(dir, &fakeKeychain{items: map[string]string{}}, &fakeAuth{})
+	v.Create("dev", []byte("pw"), true, Policy{Mode: Every})
+	v.SetRemote("dev", true)
+	v.SetRemote("dev", false)
+	metas, _ := filepath.Glob(filepath.Join(dir, "*", "meta.json"))
+	if len(metas) != 1 {
+		t.Fatalf("%d metas", len(metas))
+	}
+	data, _ := os.ReadFile(metas[0])
+	if strings.Contains(string(data), "remote") {
+		t.Fatalf("meta has remote while off:\n%s", data)
 	}
 }

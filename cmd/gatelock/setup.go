@@ -13,9 +13,11 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// setupState is the Setup page's: where the command line tool is, and
-// whether the user's shell finds it.
+// setupState is the Setup page's: where the command line tool is, whether
+// the user's shell finds it, and Telegram's card.
 type setupState struct {
+	telegram telegramSetup
+
 	checked bool
 	// linked is what ~/.local/bin/gatelock links to, "" if nothing.
 	linked string
@@ -111,7 +113,7 @@ For a command that runs for long, such as a dev server, add --no-record-output b
 
     ` + command + ` run --no-record-output <vault> -- npm run dev
 
-Ask the user which vault to use. Do not try to print or read the values.
+Ask the user which vault to use. Do not try to print or read the values. If Gatelock says the user denied a run, and why, do as the reason says rather than run it again.
 `
 }
 
@@ -156,6 +158,7 @@ func (a *app) setupPage(c *ui.Context) {
 					})
 				}
 			})
+			a.telegramCard(c)
 			command := "gatelock"
 			if s.pathChecked && !s.onPath {
 				command = cliPath()

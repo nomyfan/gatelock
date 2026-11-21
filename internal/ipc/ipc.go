@@ -52,6 +52,9 @@ type frame struct {
 	// error
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
+	// error denied: where the user denied it, and why, if they said
+	DeniedBy   string `json:"denied_by,omitempty"`
+	DenyReason string `json:"deny_reason,omitempty"`
 	// started
 	PGID int `json:"pgid,omitempty"`
 	// output
@@ -203,7 +206,7 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 	if by != "" {
 		reason = fmt.Sprintf("unlock %s for %s to run %s", req.Vault, by, strings.Join(req.Argv, " "))
 	}
-	secrets, err := v.Resolve(ctx, req.Vault, reason)
+	secrets, err := v.ResolveRemote(ctx, req.Vault, reason)
 	mu.Lock()
 	switch {
 	case stopped:
@@ -217,8 +220,12 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 		return
 	case errors.Is(err, vault.ErrDenied):
 		mu.Unlock()
-		rec.End(history.Denied)
-		c.write(frame{Type: "error", Error: errDenied, Message: "authorization denied"})
+		var denied *vault.DeniedError
+		if !errors.As(err, &denied) {
+			denied = &vault.DeniedError{}
+		}
+		rec.Denied(denied.By, denied.Reason)
+		c.write(frame{Type: "error", Error: errDenied, Message: denied.Error(), DeniedBy: denied.By, DenyReason: denied.Reason})
 		return
 	case err != nil:
 		mu.Unlock()
@@ -356,7 +363,8 @@ func Dial(socketPath string, start func() error) (net.Conn, error) {
 
 // Run asks the app over nc to run a command, and waits for the user to
 // authorize it. It returns the vault's values, or an error wrapping
-// vault.ErrNotFound, vault.ErrDenied, or another with the app's message.
+// vault.ErrNotFound, a *vault.DeniedError, or another with the app's
+// message.
 func Run(nc net.Conn, req RunRequest) (*Session, []vault.Secret, error) {
 	c := newConn(nc)
 	if err := c.write(frame{Type: "run", Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd, NoRecordOutput: req.NoRecordOutput}); err != nil {
@@ -374,7 +382,7 @@ func Run(nc net.Conn, req RunRequest) (*Session, []vault.Secret, error) {
 		case errNotFound:
 			return nil, nil, fmt.Errorf("%w: %s", vault.ErrNotFound, answer.Message)
 		case errDenied:
-			return nil, nil, vault.ErrDenied
+			return nil, nil, &vault.DeniedError{By: answer.DeniedBy, Reason: answer.DenyReason}
 		}
 		return nil, nil, errors.New(answer.Message)
 	}

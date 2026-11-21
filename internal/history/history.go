@@ -52,6 +52,10 @@ type Activity struct {
 	// OutputNotRecorded is set when `gatelock run` was asked not to record
 	// the command's output, as for a dev server that runs for hours.
 	OutputNotRecorded bool `json:"output_not_recorded,omitempty"`
+	// DeniedBy says where the user denied it, as "Telegram", and
+	// DenyReason why, as they said; either may be empty.
+	DeniedBy   string `json:"denied_by,omitempty"`
+	DenyReason string `json:"deny_reason,omitempty"`
 }
 
 const (
@@ -213,6 +217,14 @@ func (rec *Record) Exited(code int) {
 // End records that the activity ended otherwise than by the command exiting:
 // Denied, Failed or Lost.
 func (rec *Record) End(status Status) { rec.end(func(r *Activity) { r.Status = status }) }
+
+// Denied records that the user denied it, where and why, if known.
+func (rec *Record) Denied(by, reason string) {
+	rec.end(func(r *Activity) {
+		r.Status = Denied
+		r.DeniedBy, r.DenyReason = by, reason
+	})
+}
 
 func (rec *Record) end(change func(*Activity)) {
 	rec.change(func(r *Activity) {

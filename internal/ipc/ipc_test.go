@@ -22,10 +22,21 @@ import (
 
 type auth struct {
 	deny bool
-	hold chan struct{}
+	// denial, if set, is how the user denies.
+	denial error
+	hold   chan struct{}
+
+	mu      sync.Mutex
+	prompts []vault.Prompt
 }
 
-func (a *auth) ConfirmUser(ctx context.Context, reason string) error {
+func (a *auth) ConfirmUser(ctx context.Context, p vault.Prompt) error {
+	a.mu.Lock()
+	a.prompts = append(a.prompts, p)
+	a.mu.Unlock()
+	if a.denial != nil {
+		return a.denial
+	}
 	if a.hold != nil {
 		select {
 		case <-a.hold:
@@ -82,6 +93,7 @@ func (l *trackingListener) breakAll() {
 
 type app struct {
 	socket  string
+	vaults  *vault.Store
 	history *history.Store
 	l       *trackingListener
 	cwd     string
@@ -116,7 +128,7 @@ func startApp(t *testing.T, a *auth) *app {
 	tl := &trackingListener{Listener: l}
 	go Serve(tl, v, h)
 	t.Cleanup(func() { l.Close() })
-	return &app{socket: socket, history: h, l: tl, cwd: t.TempDir()}
+	return &app{socket: socket, vaults: v, history: h, l: tl, cwd: t.TempDir()}
 }
 
 func noStart() error { return errors.New("not started in tests") }
@@ -230,6 +242,26 @@ func TestDenied(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	waitFor(t, a.history, history.Denied)
+}
+
+func TestDeniedSaysWhereAndWhy(t *testing.T) {
+	au := &auth{denial: &vault.DeniedError{By: "Telegram", Reason: "use staging"}}
+	a := startApp(t, au)
+	a.vaults.SetRemote("prod", true)
+	_, _, err := runCLI(t, a, "true")
+	var denied *vault.DeniedError
+	if !errors.As(err, &denied) || denied.By != "Telegram" || denied.Reason != "use staging" {
+		t.Fatalf("got %v", err)
+	}
+	if r := waitFor(t, a.history, history.Denied); r.DeniedBy != "Telegram" || r.DenyReason != "use staging" {
+		t.Fatalf("recorded %+v", r)
+	}
+	// A command may be approved away from the Mac, as the vault allows.
+	au.mu.Lock()
+	defer au.mu.Unlock()
+	if len(au.prompts) != 1 || !au.prompts[0].Remote || au.prompts[0].Vault != "prod" {
+		t.Fatalf("asked %+v", au.prompts)
+	}
 }
 
 func TestAuthorizingIsRecorded(t *testing.T) {

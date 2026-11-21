@@ -311,6 +311,9 @@ func (a *app) vaultPage(c *ui.Context, name string) {
 	keychain := "passphrase typed each time"
 	if vt.Keychain {
 		keychain = "passphrase in the Keychain"
+		if _, paired := a.remote.paired(); paired && vt.Remote {
+			keychain += ", commands asked in Telegram too"
+		}
 	}
 	a.header(c, a.vaultIcon(vt), vt.Name, describePolicy(vt.Policy)+", "+keychain, func() {
 		if iconButton(c, "add", plusIcon, "Add Env…").Clicked() {
@@ -911,6 +914,7 @@ type settingsForm struct {
 	policy   int
 	ttl      string
 	keychain bool
+	remote   bool
 	// newPass is typed twice while changing.
 	changing         bool
 	newPass, confirm string
@@ -947,7 +951,7 @@ func divider(c *ui.Context) {
 }
 
 func settingsFormOf(vt vault.Vault) settingsForm {
-	f := settingsForm{name: vt.Name, keychain: vt.Keychain, ttl: ttls[1].label}
+	f := settingsForm{name: vt.Name, keychain: vt.Keychain, remote: vt.Remote, ttl: ttls[1].label}
 	for i, m := range policies {
 		if m == vt.Policy.Mode {
 			f.policy = i
@@ -993,6 +997,21 @@ func (a *app) settingsDialog(c *ui.Context, vt vault.Vault) {
 					a.hideValues()
 					a.refresh()
 				}
+				divider(c)
+				_, paired := a.remote.paired()
+				about := "Approve or deny the commands that ask in Telegram as well as at the Mac, with a reason the agent sees. Telegram is sent the command line."
+				switch {
+				case !paired:
+					about = "Set Telegram up on the Setup page first."
+				case !vt.Keychain:
+					about = "Needs the passphrase kept in the Keychain."
+				}
+				settingRow(c, "Also ask in Telegram", about, func() {
+					if toggle(c.Key("remote"), &f.remote).Label("Ask in Telegram too").Disabled(!paired || !vt.Keychain).Changed() {
+						a.report(a.vaults.SetRemote(vt.Name, f.remote))
+						a.refresh()
+					}
+				})
 			})
 			group(c, "Passphrase", func() {
 				settingRow(c, "Keep in the Keychain", "Unlock with Touch ID instead of typing it. Turning it on asks for it once.", func() {
@@ -1184,6 +1203,9 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 					}
 					ui.Text(c, about).MinWidth(0).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
 				})
+				if r.Status == history.Denied && (r.DeniedBy != "" || r.DenyReason != "") {
+					ui.Text(c, denial(r)).MinWidth(0).FontSize(t.FontSize - 1).TextColor(t.Danger).SingleLine().Tooltip(denial(r))
+				}
 			})
 			ui.Text(c, when(r)).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
 			if !r.Status.Ended() {
@@ -1322,11 +1344,26 @@ func statusText(r history.Activity) string {
 	case history.Stopped:
 		return "Stopped from Gatelock"
 	case history.Denied:
+		if r.DeniedBy != "" || r.DenyReason != "" {
+			return denial(r)
+		}
 		return "Not authorized"
 	case history.Failed:
 		return "Could not be started"
 	}
 	return "Lost: gatelock run went away before it ended"
+}
+
+// denial says where an activity was denied, and why, as far as known.
+func denial(r history.Activity) string {
+	s := "Denied"
+	if r.DeniedBy != "" {
+		s += " in " + r.DeniedBy
+	}
+	if r.DenyReason != "" {
+		s += ": " + r.DenyReason
+	}
+	return s
 }
 
 // when says when an activity started, and how long it took or has taken.

@@ -15,6 +15,7 @@ import (
 
 	"gatelock/internal/caller"
 	"gatelock/internal/history"
+	"gatelock/internal/telegram"
 	"gatelock/internal/vault"
 )
 
@@ -31,7 +32,7 @@ func (k memKeychain) Delete(a string) error        { delete(k, a); return nil }
 
 type denyAll struct{}
 
-func (denyAll) ConfirmUser(context.Context, string) error { return vault.ErrDenied }
+func (denyAll) ConfirmUser(context.Context, vault.Prompt) error { return vault.ErrDenied }
 func (denyAll) AskPassphrase(context.Context, string, string, bool) ([]byte, error) {
 	return nil, vault.ErrDenied
 }
@@ -39,7 +40,7 @@ func (denyAll) AskPassphrase(context.Context, string, string, bool) ([]byte, err
 // allowAll approves, and gives testApp's passphrase.
 type allowAll struct{}
 
-func (allowAll) ConfirmUser(context.Context, string) error { return nil }
+func (allowAll) ConfirmUser(context.Context, vault.Prompt) error { return nil }
 func (allowAll) AskPassphrase(context.Context, string, string, bool) ([]byte, error) {
 	return []byte("pw"), nil
 }
@@ -84,7 +85,7 @@ func testApp(t *testing.T) *app {
 	running, _ := h.Begin("prod-api", []string{"npm", "run", "dev"}, "/work/api", caller.ClaudeCode, false, func() {})
 	running.Authorized()
 
-	a := &app{home: dir, vaults: v, history: h}
+	a := &app{home: dir, vaults: v, history: h, remote: &remote{path: filepath.Join(dir, "telegram.json"), kc: memKeychain{}}}
 	a.view.page = pageActivities
 	a.refresh()
 	return a
@@ -628,5 +629,93 @@ func TestLongKeyKeepsToItsColumn(t *testing.T) {
 	tt.Frame()
 	if wide, _ := column(); wide.W <= narrow.W {
 		t.Fatalf("key %v wide in a wider window, %v before", wide.W, narrow.W)
+	}
+}
+
+// pairTelegram pairs a's Telegram, as its Setup card would.
+func pairTelegram(a *app) {
+	a.remote.config = &telegram.Config{
+		Bot:  telegram.User{ID: 1, IsBot: true, Username: "my_gatelock_bot"},
+		User: telegram.User{ID: 42, FirstName: "Ada", Username: "ada"},
+	}
+}
+
+func TestAlsoAskInTelegram(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("prod-api")
+	if err := tt.Click("Settings…"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("Set Telegram up on the Setup page first.") {
+		t.Fatalf("not paired: %q", tt.Texts())
+	}
+	tt.Click("Ask in Telegram too")
+	if vt, _ := a.vaults.Vault("prod-api"); vt.Remote {
+		t.Fatal("turned on without Telegram")
+	}
+
+	pairTelegram(a)
+	tt.Frame()
+	if !tt.HasText("Telegram is sent the command line.") {
+		t.Fatalf("paired: %q", tt.Texts())
+	}
+	if err := tt.Click("Ask in Telegram too"); err != nil {
+		t.Fatal(err)
+	}
+	if vt, _ := a.vaults.Vault("prod-api"); !vt.Remote {
+		t.Fatal("not turned on")
+	}
+	snapshot(t, tt, "settings-telegram")
+	tt.Click("Done")
+	if !tt.HasText("passphrase in the Keychain, commands asked in Telegram too") {
+		t.Fatalf("vault page: %q", tt.Texts())
+	}
+}
+
+func TestDenialShownWithItsReason(t *testing.T) {
+	a := testApp(t)
+	rec, _ := a.history.Begin("prod-api", []string{"make", "migrate"}, "/work/api", caller.ClaudeCode, false, func() {})
+	rec.Denied("Telegram", "use staging")
+	a.refresh()
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if !tt.HasText("Denied in Telegram: use staging") {
+		t.Fatalf("%q", tt.Texts())
+	}
+	snapshot(t, tt, "activities-denied")
+}
+
+func TestTelegramSetupCard(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageSetup
+	// Not checking the shell's PATH, which is not the test's.
+	a.view.setup.checked = true
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if !tt.HasText("Make a bot of Gatelock's own with @BotFather") {
+		t.Fatalf("not paired: %q", tt.Texts())
+	}
+	if err := tt.Click("Bot token"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("not a token")
+	if err := tt.Click("Connect"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if a.view.setup.telegram.busy || !tt.HasText("that is not a bot token") {
+		t.Fatalf("a bad token: %q", tt.Texts())
+	}
+	snapshot(t, tt, "setup")
+
+	pairTelegram(a)
+	tt.Frame()
+	if !tt.HasText("Asks Ada (@ada) through @my_gatelock_bot") {
+		t.Fatalf("paired: %q", tt.Texts())
+	}
+	if err := tt.Click("Disconnect"); err != nil {
+		t.Fatal(err)
+	}
+	if _, paired := a.remote.paired(); paired {
+		t.Fatal("still paired")
 	}
 }
