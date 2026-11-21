@@ -264,6 +264,38 @@ func TestDeniedSaysWhereAndWhy(t *testing.T) {
 	}
 }
 
+func TestPurposeShownAndRecorded(t *testing.T) {
+	au := &auth{deny: true}
+	a := startApp(t, au)
+	nc, err := Dial(a.socket, noStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What a command says is cleaned up before the user sees it.
+	_, _, err = Run(nc, RunRequest{Vault: "prod", Argv: []string{"make", "deploy"}, Cwd: a.cwd, Purpose: " deploy\n\"the\"\u202e  hotfix\t"})
+	if !errors.Is(err, vault.ErrDenied) {
+		t.Fatalf("got %v", err)
+	}
+	if r := waitFor(t, a.history, history.Denied); r.Purpose != "deploy 'the' hotfix" {
+		t.Fatalf("recorded %q", r.Purpose)
+	}
+	au.mu.Lock()
+	defer au.mu.Unlock()
+	if len(au.prompts) != 1 || !strings.HasSuffix(au.prompts[0].Reason, `to run make deploy (reason given: "deploy 'the' hotfix")`) {
+		t.Fatalf("asked %+v", au.prompts)
+	}
+}
+
+func TestCleanPurpose(t *testing.T) {
+	if got := cleanPurpose("  \n\t "); got != "" {
+		t.Fatalf("blank: %q", got)
+	}
+	long := cleanPurpose(strings.Repeat("修", 300))
+	if n := len([]rune(long)); n != maxPurpose || !strings.HasSuffix(long, "…") {
+		t.Fatalf("cut to %d runes: %q", n, long)
+	}
+}
+
 func TestAuthorizingIsRecorded(t *testing.T) {
 	au := &auth{hold: make(chan struct{})}
 	a := startApp(t, au)

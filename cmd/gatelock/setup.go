@@ -103,7 +103,9 @@ func agentNote(command string) string {
 
 Commands that need credentials run through Gatelock, which puts a vault's env in the command's environment and masks the values in its output:
 
-    ` + command + ` run <vault> -- <command> [args...]
+    ` + command + ` run --reason "<why it needs the vault>" <vault> -- <command> [args...]
+
+Gatelock shows the reason to the user when it asks them, so say in a few words what the command is for, such as "deploy the hotfix to production".
 
 The shell expands $VARS before Gatelock adds the env, so to use one in the command's arguments, let a shell inside expand it:
 

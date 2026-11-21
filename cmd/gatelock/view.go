@@ -1203,6 +1203,9 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 					}
 					ui.Text(c, about).MinWidth(0).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine()
 				})
+				if r.Purpose != "" {
+					ui.Text(c, "Reason given: "+r.Purpose).MinWidth(0).FontSize(t.FontSize - 1).TextColor(t.TextMuted).SingleLine().Tooltip(r.Purpose)
+				}
 				if r.Status == history.Denied && (r.DeniedBy != "" || r.DenyReason != "") {
 					ui.Text(c, denial(r)).MinWidth(0).FontSize(t.FontSize - 1).TextColor(t.Danger).SingleLine().Tooltip(denial(r))
 				}

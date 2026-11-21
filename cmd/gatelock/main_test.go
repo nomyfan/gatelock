@@ -78,11 +78,11 @@ func testApp(t *testing.T) *app {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec, _ := h.Begin("prod-api", []string{"npm", "run", "deploy"}, "/work/api", caller.Codex, false, func() {})
+	rec, _ := h.Begin(history.Activity{Vault: "prod-api", Argv: []string{"npm", "run", "deploy"}, Cwd: "/work/api", Caller: caller.Codex}, func() {})
 	rec.Authorized()
 	rec.Write([]byte("deploying with [REDACTED:prod-api/STRIPE_KEY]\n"))
 	rec.Exited(0)
-	running, _ := h.Begin("prod-api", []string{"npm", "run", "dev"}, "/work/api", caller.ClaudeCode, false, func() {})
+	running, _ := h.Begin(history.Activity{Vault: "prod-api", Argv: []string{"npm", "run", "dev"}, Cwd: "/work/api", Caller: caller.ClaudeCode}, func() {})
 	running.Authorized()
 
 	a := &app{home: dir, vaults: v, history: h, remote: &remote{path: filepath.Join(dir, "telegram.json"), kc: memKeychain{}}}
@@ -173,7 +173,7 @@ func TestAddEnv(t *testing.T) {
 func TestStopFromActivitiesPage(t *testing.T) {
 	a := testApp(t)
 	stopped := false
-	rec, _ := a.history.Begin("prod-api", []string{"sleep", "60"}, "/", "", false, func() { stopped = true })
+	rec, _ := a.history.Begin(history.Activity{Vault: "prod-api", Argv: []string{"sleep", "60"}, Cwd: "/"}, func() { stopped = true })
 	rec.Authorized()
 	a.refresh()
 	tt := ui.NewTester(a.mainView, 960, 640)
@@ -205,7 +205,7 @@ func TestActivitiesOpenAndCloseOnTheirOwn(t *testing.T) {
 
 func TestOutputNotRecorded(t *testing.T) {
 	a := testApp(t)
-	rec, _ := a.history.Begin("prod-api", []string{"npm", "run", "serve"}, "/work/api", "", true, func() {})
+	rec, _ := a.history.Begin(history.Activity{Vault: "prod-api", Argv: []string{"npm", "run", "serve"}, Cwd: "/work/api", OutputNotRecorded: true}, func() {})
 	rec.Authorized()
 	a.refresh()
 	tt := ui.NewTester(a.mainView, 960, 640)
@@ -219,8 +219,24 @@ func TestOutputNotRecorded(t *testing.T) {
 }
 
 func TestRunUnknownOption(t *testing.T) {
-	if code := runCommand([]string{"--quiet", "prod-api", "true"}); code != exitGatelock {
-		t.Fatalf("code %d", code)
+	for _, args := range [][]string{
+		{"--quiet", "prod-api", "true"},
+		{"--reason=deploy", "--quiet", "prod-api", "true"},
+		{"--reason"},
+	} {
+		if code := runCommand(args); code != exitGatelock {
+			t.Fatalf("%q: code %d", args, code)
+		}
+	}
+}
+
+func TestPurposeShown(t *testing.T) {
+	a := testApp(t)
+	a.history.Begin(history.Activity{Vault: "prod-api", Argv: []string{"make", "deploy"}, Cwd: "/work/api", Purpose: "deploy the hotfix"}, func() {})
+	a.refresh()
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if !tt.HasText("Reason given: deploy the hotfix") {
+		t.Fatalf("%q", tt.Texts())
 	}
 }
 
@@ -675,7 +691,7 @@ func TestAlsoAskInTelegram(t *testing.T) {
 
 func TestDenialShownWithItsReason(t *testing.T) {
 	a := testApp(t)
-	rec, _ := a.history.Begin("prod-api", []string{"make", "migrate"}, "/work/api", caller.ClaudeCode, false, func() {})
+	rec, _ := a.history.Begin(history.Activity{Vault: "prod-api", Argv: []string{"make", "migrate"}, Cwd: "/work/api", Caller: caller.ClaudeCode}, func() {})
 	rec.Denied("Telegram", "use staging")
 	a.refresh()
 	tt := ui.NewTester(a.mainView, 960, 640)

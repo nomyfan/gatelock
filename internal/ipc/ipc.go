@@ -22,6 +22,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 
@@ -46,6 +47,7 @@ type frame struct {
 	Argv           []string `json:"argv,omitempty"`
 	Cwd            string   `json:"cwd,omitempty"`
 	NoRecordOutput bool     `json:"no_record_output,omitempty"`
+	Purpose        string   `json:"purpose,omitempty"`
 	// granted
 	ActivityID string         `json:"activity_id,omitempty"`
 	Env        []vault.Secret `json:"env,omitempty"`
@@ -167,12 +169,17 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 		return
 	}
 
+	purpose := cleanPurpose(req.Purpose)
+
 	// The CLI stops the command once the run is granted. Before, stopping
 	// dismisses the question, and the run ends without the command.
 	ctx, cancel := context.WithCancel(context.Background())
 	var mu sync.Mutex
 	granted, stopped := false, false
-	rec, err := h.Begin(req.Vault, req.Argv, req.Cwd, by, req.NoRecordOutput, func() {
+	rec, err := h.Begin(history.Activity{
+		Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd,
+		Caller: by, Purpose: purpose, OutputNotRecorded: req.NoRecordOutput,
+	}, func() {
 		mu.Lock()
 		defer mu.Unlock()
 		if granted {
@@ -205,6 +212,10 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 	reason := fmt.Sprintf("unlock %s to run %s", req.Vault, strings.Join(req.Argv, " "))
 	if by != "" {
 		reason = fmt.Sprintf("unlock %s for %s to run %s", req.Vault, by, strings.Join(req.Argv, " "))
+	}
+	if purpose != "" {
+		// Quoted, so that it cannot pass for what Gatelock says.
+		reason += ` (reason given: "` + purpose + `")`
 	}
 	secrets, err := v.ResolveRemote(ctx, req.Vault, reason)
 	mu.Lock()
@@ -269,6 +280,30 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 	rec.End(history.Lost)
 }
 
+// maxPurpose is the most of a purpose kept, in runes.
+const maxPurpose = 200
+
+// cleanPurpose makes the purpose a command gives one line of plain text,
+// to show the user in quotes: control characters, line breaks among them,
+// become spaces, runs of spaces one, double quotes single ones, and it is
+// cut to maxPurpose runes.
+func cleanPurpose(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '"':
+			return '\''
+		case unicode.IsControl(r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r):
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > maxPurpose {
+		s = string(r[:maxPurpose-1]) + "…"
+	}
+	return s
+}
+
 func checkRequest(req frame, v *vault.Store) string {
 	if _, err := v.Vault(req.Vault); err != nil {
 		var names []string
@@ -329,6 +364,9 @@ type RunRequest struct {
 	// NoRecordOutput asks the app not to keep the command's output; the
 	// activity is recorded still, and can be stopped.
 	NoRecordOutput bool
+	// Purpose is why the command runs, as the caller says, to show the
+	// user; it may be empty.
+	Purpose string
 }
 
 // Session is a run the app authorized, as the CLI reports it.
@@ -367,7 +405,7 @@ func Dial(socketPath string, start func() error) (net.Conn, error) {
 // message.
 func Run(nc net.Conn, req RunRequest) (*Session, []vault.Secret, error) {
 	c := newConn(nc)
-	if err := c.write(frame{Type: "run", Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd, NoRecordOutput: req.NoRecordOutput}); err != nil {
+	if err := c.write(frame{Type: "run", Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd, NoRecordOutput: req.NoRecordOutput, Purpose: req.Purpose}); err != nil {
 		nc.Close()
 		return nil, nil, err
 	}
