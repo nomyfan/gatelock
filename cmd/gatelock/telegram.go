@@ -234,18 +234,20 @@ type reachState struct {
 }
 
 // checkReach checks, in the background, that Telegram can be reached as
-// it is now, dropping the check under way, if any.
+// it is now, dropping the check under way, if any. It checks only while
+// paired, so that the app does not reach out to Telegram for a user who
+// does not use it; unpaired, it clears what an earlier check found.
 func (a *app) checkReach() {
 	r := &a.view.setup.telegram.reach
 	if r.cancel != nil {
 		r.cancel()
 	}
-	if a.reach == nil {
+	gen := r.gen + 1
+	*r = reachState{gen: gen}
+	if _, paired := a.remote.paired(); !paired || a.reach == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	r.gen++
-	gen := r.gen
 	*r = reachState{checked: true, checking: true, route: a.proxy.route(), gen: gen, cancel: cancel}
 	go func() {
 		defer cancel()
@@ -335,21 +337,26 @@ func (a *app) connectTelegram() {
 				err = a.remote.pair(bot, token, telegram.Config{Bot: me, User: user})
 			}
 		}
-		mygo.RunOnMain(func() {
-			s.busy, s.link, s.cancel = false, "", nil
-			switch {
-			case errors.Is(err, context.Canceled):
-			case errors.Is(err, context.DeadlineExceeded):
-				a.view.toast = "Not paired: no one pressed Start in time"
-			case err != nil:
-				a.view.toast = err.Error()
-			default:
-				s.token = ""
-				a.view.toast = "Paired with " + user.Name()
-			}
-			a.refresh()
-		})
+		mygo.RunOnMain(func() { a.connected(user, err) })
 	}()
+}
+
+// connected shows how connecting ended: paired with user, unless err.
+func (a *app) connected(user telegram.User, err error) {
+	s := &a.view.setup.telegram
+	s.busy, s.link, s.cancel = false, "", nil
+	switch {
+	case errors.Is(err, context.Canceled):
+	case errors.Is(err, context.DeadlineExceeded):
+		a.view.toast = "Not paired: no one pressed Start in time"
+	case err != nil:
+		a.view.toast = err.Error()
+	default:
+		s.token = ""
+		a.view.toast = "Paired with " + user.Name()
+		a.checkReach()
+	}
+	a.refresh()
 }
 
 func (a *app) telegramCard(c *ui.Context) {
@@ -374,6 +381,8 @@ func (a *app) telegramCard(c *ui.Context) {
 				if ui.Button(c, "Disconnect").Clicked() {
 					if err := a.remote.forget(); err != nil {
 						a.view.toast = err.Error()
+					} else {
+						a.checkReach()
 					}
 				}
 			case s.busy:

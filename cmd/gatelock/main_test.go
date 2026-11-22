@@ -1032,8 +1032,8 @@ func TestUnreachable(t *testing.T) {
 	}
 }
 
-// Entering the Setup page checks that Telegram can be reached, once, and
-// shows what the check found.
+// Entering the Setup page while paired checks that Telegram can be
+// reached, once, and shows what the check found; unpaired, it does not.
 func TestReachCheckedOnEnteringSetup(t *testing.T) {
 	a := testApp(t)
 	a.view.setup.checked = true
@@ -1077,10 +1077,27 @@ func TestReachCheckedOnEnteringSetup(t *testing.T) {
 		}
 	}
 	tt := ui.NewTester(a.mainView, 960, 640)
-	if err := tt.Click("Setup"); err != nil {
-		t.Fatal(err)
+	enter := func() {
+		t.Helper()
+		if err := tt.Click("Activities"); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
+		if err := tt.Click("Setup"); err != nil {
+			t.Fatal(err)
+		}
+		tt.Frame()
 	}
-	tt.Frame()
+	enter()
+	if called() {
+		t.Fatal("checked while unpaired")
+	}
+	if tt.HasText("Checking that Telegram can be reached through 127.0.0.1:7890") {
+		t.Fatalf("unpaired: %q", tt.Texts())
+	}
+
+	pairTelegram(a)
+	enter()
 	if !called() {
 		t.Fatal("not checked on entering")
 	}
@@ -1104,14 +1121,7 @@ func TestReachCheckedOnEnteringSetup(t *testing.T) {
 		t.Fatalf("reached: %q", tt.Texts())
 	}
 
-	if err := tt.Click("Activities"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
-	if err := tt.Click("Setup"); err != nil {
-		t.Fatal(err)
-	}
-	tt.Frame()
+	enter()
 	if !called() {
 		t.Fatal("not checked on entering again")
 	}
@@ -1121,4 +1131,67 @@ func TestReachCheckedOnEnteringSetup(t *testing.T) {
 		t.Fatalf("not reached: %q", tt.Texts())
 	}
 	snapshot(t, tt, "setup-unreachable")
+
+	// Disconnecting hides what the check found, and checks no more.
+	if err := tt.Click("Disconnect"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if tt.HasText("Telegram can't be reached") {
+		t.Fatalf("disconnected: %q", tt.Texts())
+	}
+	enter()
+	if called() {
+		t.Fatal("checked after disconnecting")
+	}
+}
+
+// Pairing on the Setup page checks that Telegram can be reached at once,
+// without leaving the page; connecting that fails does not.
+func TestReachCheckedOnPairing(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageSetup
+	a.view.setup.checked = true
+	calls := make(chan struct{}, 4)
+	a.reach = func(ctx context.Context) error {
+		calls <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	r := &a.view.setup.telegram.reach
+	t.Cleanup(func() {
+		if r.cancel != nil {
+			r.cancel()
+		}
+	})
+	called := func() bool {
+		select {
+		case <-calls:
+			return true
+		case <-time.After(time.Second):
+			return false
+		}
+	}
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Frame()
+	if called() {
+		t.Fatal("checked while unpaired")
+	}
+
+	a.connected(telegram.User{}, errors.New("telegram getMe: Unauthorized"))
+	tt.Frame()
+	if called() {
+		t.Fatal("checked after connecting failed")
+	}
+
+	// As connectTelegram finds once remote.pair has kept the pairing.
+	pairTelegram(a)
+	a.connected(telegram.User{ID: 42, FirstName: "Ada", Username: "ada"}, nil)
+	tt.Frame()
+	if !called() {
+		t.Fatal("not checked on pairing")
+	}
+	if !tt.HasText("Checking that Telegram can be reached") {
+		t.Fatalf("%q", tt.Texts())
+	}
 }
