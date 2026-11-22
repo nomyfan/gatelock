@@ -360,6 +360,9 @@ func (b *Bot) Pair(ctx context.Context, code string) (User, error) {
 type Config struct {
 	Bot  User `json:"bot"`
 	User User `json:"user"`
+	// TokenAccount is the token's Keychain account, one for each pairing,
+	// so that pairings in other data directories keep theirs.
+	TokenAccount string `json:"token_account"`
 }
 
 // LoadConfig reads the config kept at path; none is os.ErrNotExist.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"os"
 	"os/exec"
@@ -18,9 +19,23 @@ import (
 	"gatelock/internal/vault"
 )
 
-// tokenAccount is the Keychain account of the bot's token. The vaults'
-// accounts are their ids, from rand.Text, which this cannot be.
-const tokenAccount = "telegram-bot-token"
+// tokenAccount begins the Keychain account of a pairing's bot token, which
+// the rest, from rand.Text, makes its own, so that pairings in other data
+// directories keep theirs. The vaults' accounts are their ids, from
+// rand.Text alone, which these cannot be.
+const tokenAccount = "telegram-bot-token-"
+
+// newTokenAccount returns a Keychain account for a new pairing's token.
+func newTokenAccount() string { return tokenAccount + rand.Text() }
+
+// ownTokenAccount reports whether account is one newTokenAccount returns,
+// as a pairing read from disk must have, so that disconnecting cannot
+// delete another item, such as a vault's passphrase.
+func ownTokenAccount(account string) bool {
+	rest, ok := strings.CutPrefix(account, tokenAccount)
+	// rand.Text gives 26 now, and may give more later.
+	return ok && len(rest) >= 26 && strings.Trim(rest, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") == ""
+}
 
 // remote is the Telegram pairing, used by the goroutines that ask as well
 // as the main thread. The bot and the user are kept in telegram.json, the
@@ -50,10 +65,11 @@ func (r *remote) set(c *telegram.Config, ap *telegram.Approver) {
 	}
 }
 
-// load reads the pairing kept, if any.
+// load reads the pairing kept, if any. One without a token account of
+// its own is none, and is paired again.
 func (r *remote) load() {
 	c, err := telegram.LoadConfig(r.path)
-	if err != nil {
+	if err != nil || !ownTokenAccount(c.TokenAccount) {
 		return
 	}
 	r.mu.Lock()
@@ -83,13 +99,13 @@ func (r *remote) ask(ctx context.Context, p vault.Prompt) error {
 		r.mu.Unlock()
 		return errUnpaired
 	}
-	ap, user, pairing := r.approver, r.config.User.ID, r.pairing
+	ap, config, pairing := r.approver, *r.config, r.pairing
 	r.mu.Unlock()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(pairing, cancel)()
 	if ap == nil {
-		token, err := r.kc.Get(tokenAccount)
+		token, err := r.kc.Get(config.TokenAccount)
 		if err != nil {
 			return errors.New("the Telegram bot's token is not in the Keychain: set Telegram up again")
 		}
@@ -97,7 +113,7 @@ func (r *remote) ask(ctx context.Context, p vault.Prompt) error {
 		if err != nil {
 			return err
 		}
-		ap = telegram.NewApprover(bot, user, computerName())
+		ap = telegram.NewApprover(bot, config.User.ID, computerName())
 		r.mu.Lock()
 		if r.pairing == pairing && r.approver == nil {
 			r.approver = ap
@@ -111,13 +127,15 @@ func (r *remote) ask(ctx context.Context, p vault.Prompt) error {
 	return err
 }
 
-// pair keeps the pairing of user with bot, whose token it is.
+// pair keeps the pairing of user with bot, whose token it is, under a
+// Keychain account of its own.
 func (r *remote) pair(bot *telegram.Bot, token string, c telegram.Config) error {
-	if err := r.kc.Set(tokenAccount, []byte(token)); err != nil {
+	c.TokenAccount = newTokenAccount()
+	if err := r.kc.Set(c.TokenAccount, []byte(token)); err != nil {
 		return err
 	}
 	if err := c.Save(r.path); err != nil {
-		r.kc.Delete(tokenAccount)
+		r.kc.Delete(c.TokenAccount)
 		return err
 	}
 	ap := telegram.NewApprover(bot, c.User.ID, computerName())
@@ -127,15 +145,31 @@ func (r *remote) pair(bot *telegram.Bot, token string, c telegram.Config) error 
 	return nil
 }
 
-// forget removes the pairing, and the token.
+// forget removes the pairing: it withdraws what the pairing asks, then
+// removes the token, then the pairing kept. If either fails, the pairing
+// stays, so that disconnecting again finishes it.
 func (r *remote) forget() error {
-	if err := os.Remove(r.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	r.mu.Lock()
+	c := r.config
 	r.set(nil, nil)
 	r.mu.Unlock()
-	return r.kc.Delete(tokenAccount)
+	if c == nil {
+		return nil
+	}
+	err := r.kc.Delete(c.TokenAccount)
+	if err == nil {
+		if err = os.Remove(r.path); errors.Is(err, os.ErrNotExist) {
+			err = nil
+		}
+	}
+	if err != nil {
+		r.mu.Lock()
+		if r.config == nil {
+			r.set(c, nil)
+		}
+		r.mu.Unlock()
+	}
+	return err
 }
 
 // computerName is the Mac's name as the user knows it, which a question

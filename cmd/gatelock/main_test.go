@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"image/png"
@@ -653,9 +654,119 @@ func pairTelegram(a *app) {
 	a.remote.mu.Lock()
 	defer a.remote.mu.Unlock()
 	a.remote.set(&telegram.Config{
-		Bot:  telegram.User{ID: 1, IsBot: true, Username: "my_gatelock_bot"},
-		User: telegram.User{ID: 42, FirstName: "Ada", Username: "ada"},
+		Bot:          telegram.User{ID: 1, IsBot: true, Username: "my_gatelock_bot"},
+		User:         telegram.User{ID: 42, FirstName: "Ada", Username: "ada"},
+		TokenAccount: newTokenAccount(),
 	}, nil)
+}
+
+// Pairings in data directories of their own keep their bots' tokens apart
+// in the one Keychain, so that disconnecting one leaves the others.
+func TestTokenPerPairing(t *testing.T) {
+	kc := memKeychain{}
+	pairIn := func(token string) *remote {
+		t.Helper()
+		r := &remote{path: filepath.Join(t.TempDir(), "telegram.json"), kc: kc}
+		bot, err := telegram.New(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.pair(bot, token, telegram.Config{Bot: telegram.User{ID: 1, IsBot: true}, User: telegram.User{ID: 42}}); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	first, second := pairIn("1:first"), pairIn("2:second")
+	if err := second.forget(); err != nil {
+		t.Fatal(err)
+	}
+	again := &remote{path: first.path, kc: kc}
+	again.load()
+	c, ok := again.paired()
+	if token, err := kc.Get(c.TokenAccount); !ok || err != nil || string(token) != "1:first" {
+		t.Fatalf("the first pairing's token: %q, %v", token, err)
+	}
+	if len(kc) != 1 {
+		t.Fatalf("Keychain holds %d", len(kc))
+	}
+}
+
+// A pairing kept without a token account of its own, such as one whose
+// account names a vault's passphrase, is none, and disconnecting deletes
+// nothing.
+func TestPairingNeedsItsOwnAccount(t *testing.T) {
+	for _, a := range []string{newTokenAccount(), tokenAccount + rand.Text() + rand.Text()} {
+		if !ownTokenAccount(a) {
+			t.Fatalf("%q not its own", a)
+		}
+	}
+	vaultID := rand.Text()
+	kc := memKeychain{"telegram-bot-token": []byte("1:first"), vaultID: []byte("passphrase")}
+	for _, account := range []string{"", `,"token_account":"telegram-bot-token"`, `,"token_account":"` + vaultID + `"`, `,"token_account":"telegram-bot-token-` + vaultID[:25] + `"`, `,"token_account":"telegram-bot-token-` + vaultID + `1"`, `,"token_account":"telegram-bot-token-` + strings.ToLower(vaultID) + `"`} {
+		path := filepath.Join(t.TempDir(), "telegram.json")
+		if err := os.WriteFile(path, []byte(`{"bot":{"id":1,"is_bot":true,"first_name":"Gatelock"},"user":{"id":42,"is_bot":false,"first_name":"Ada"}`+account+`}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r := &remote{path: path, kc: kc}
+		r.load()
+		if _, ok := r.paired(); ok {
+			t.Fatalf("paired with %s", account)
+		}
+		if err := r.forget(); err != nil || len(kc) != 2 {
+			t.Fatalf("disconnecting with %s: %v, %d left", account, err, len(kc))
+		}
+	}
+}
+
+// flakyKeychain fails to delete while fail is set.
+type flakyKeychain struct {
+	memKeychain
+	fail bool
+}
+
+func (k *flakyKeychain) Delete(a string) error {
+	if k.fail {
+		return errors.New("the Keychain is locked")
+	}
+	return k.memKeychain.Delete(a)
+}
+
+// A disconnect that fails to delete the token withdraws the questions
+// open but keeps the pairing, so that disconnecting again finishes it.
+func TestDisconnectAgain(t *testing.T) {
+	kc := &flakyKeychain{memKeychain: memKeychain{}}
+	r := &remote{path: filepath.Join(t.TempDir(), "telegram.json"), kc: kc}
+	bot, err := telegram.New("1:first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pair(bot, "1:first", telegram.Config{Bot: telegram.User{ID: 1, IsBot: true}, User: telegram.User{ID: 42}}); err != nil {
+		t.Fatal(err)
+	}
+	pairing := r.pairing
+	kc.fail = true
+	if err := r.forget(); err == nil {
+		t.Fatal("disconnected without deleting the token")
+	}
+	if pairing.Err() == nil {
+		t.Fatal("questions open not withdrawn")
+	}
+	if _, ok := r.paired(); !ok || r.pairing.Err() != nil {
+		t.Fatal("the pairing is gone, with its token left")
+	}
+	if _, err := os.Stat(r.path); err != nil {
+		t.Fatal(err)
+	}
+	kc.fail = false
+	if err := r.forget(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.paired(); ok || len(kc.memKeychain) != 0 {
+		t.Fatalf("paired %v, Keychain holds %d", ok, len(kc.memKeychain))
+	}
+	if _, err := os.Stat(r.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("telegram.json: %v", err)
+	}
 }
 
 // Disconnecting withdraws the questions asked in Telegram, which wait on
