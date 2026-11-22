@@ -54,8 +54,9 @@ type Bot struct {
 	offset int64
 }
 
-// New returns the bot whose token BotFather gave.
-func New(token string) (*Bot, error) {
+// New returns the bot whose token BotFather gave, reached through rt, or
+// http.DefaultTransport if nil.
+func New(token string, rt http.RoundTripper) (*Bot, error) {
 	if !tokenPattern.MatchString(token) {
 		return nil, errors.New("that is not a bot token: BotFather gives one like 123456:ABC-DEF…")
 	}
@@ -64,7 +65,7 @@ func New(token string) (*Bot, error) {
 	return &Bot{
 		token: token,
 		api:   defaultAPI,
-		hc:    &http.Client{Timeout: pollTimeout + 15*time.Second},
+		hc:    &http.Client{Transport: rt, Timeout: pollTimeout + 15*time.Second},
 		subs:  map[int]func(update){},
 		done:  done,
 	}, nil
@@ -171,6 +172,29 @@ func (b *Bot) call(ctx context.Context, method string, params, result any) error
 	if err := json.Unmarshal(r.Result, result); err != nil {
 		return fmt.Errorf("telegram %s: %w", method, err)
 	}
+	return nil
+}
+
+// Reach checks that the Bot API can be reached through rt, or
+// http.DefaultTransport if nil. Any answer from it will do, as it sends
+// no token: only the Bot API's host can complete its TLS handshake.
+func Reach(ctx context.Context, rt http.RoundTripper) error {
+	return reach(ctx, rt, defaultAPI)
+}
+
+func reach(ctx context.Context, rt http.RoundTripper, api string) error {
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api+"/", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
 	return nil
 }
 

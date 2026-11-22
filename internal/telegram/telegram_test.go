@@ -46,7 +46,7 @@ func newFake(t *testing.T) (*fakeAPI, *Bot) {
 	f := &fakeAPI{t: t, nextMsg: 100}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
-	b, err := New(token)
+	b, err := New(token, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,7 +533,7 @@ func TestErrorsNeverHoldTheToken(t *testing.T) {
 
 func TestNewChecksTheToken(t *testing.T) {
 	for _, bad := range []string{"", "abc", "123:abc/../x", "123:abc def", "123:abc?x=1"} {
-		if _, err := New(bad); err == nil {
+		if _, err := New(bad, nil); err == nil {
 			t.Errorf("%q taken", bad)
 		}
 	}
@@ -583,5 +583,19 @@ func TestQuestion(t *testing.T) {
 		if c.code == nil && entities != nil || c.code != nil && (len(entities) != 1 || entities[0] != *c.code) {
 			t.Errorf("%q: entities %+v", c.reason, entities)
 		}
+	}
+}
+
+func TestReach(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Any answer will do.
+		http.Redirect(w, r, "https://core.telegram.org/bots", http.StatusFound)
+	}))
+	if err := reach(context.Background(), nil, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	srv.Close()
+	if err := reach(context.Background(), nil, srv.URL); err == nil {
+		t.Fatal("reached a server gone")
 	}
 }

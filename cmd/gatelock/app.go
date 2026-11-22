@@ -18,6 +18,7 @@ import (
 
 	"gatelock/internal/history"
 	"gatelock/internal/ipc"
+	"gatelock/internal/telegram"
 	"gatelock/internal/vault"
 )
 
@@ -28,8 +29,12 @@ type app struct {
 	vaults  *vault.Store
 	history *history.Store
 	// remote is the Telegram pairing, where the vaults that allow it
-	// also ask.
+	// also ask, through proxy.
 	remote *remote
+	proxy  *proxy
+	// reach checks that Telegram can be reached through proxy; nil checks
+	// nothing.
+	reach func(context.Context) error
 
 	win      *mygo.Window // the main window, nil while closed
 	tray     *mygo.Tray
@@ -53,8 +58,11 @@ func runApp() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a := &app{home: dir, remote: &remote{path: filepath.Join(dir, "telegram.json"), kc: keychain{}}}
+	px := newProxy(filepath.Join(dir, "settings.json"))
+	a := &app{home: dir, proxy: px, remote: &remote{path: filepath.Join(dir, "telegram.json"), kc: keychain{}, rt: px.transport}}
 	a.remote.load()
+	a.view.setup.telegram.proxy = px.String()
+	a.reach = func(ctx context.Context) error { return telegram.Reach(ctx, px.transport) }
 	if a.vaults, err = vault.Open(filepath.Join(dir, "vaults"), keychain{}, a); err != nil {
 		log.Fatal(err)
 	}
@@ -113,6 +121,7 @@ func (a *app) openWindow() {
 		})
 		a.win.OnClose(func(*mygo.CloseEvent) {
 			a.win = nil
+			a.view.entered = ""
 			mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 		})
 	}

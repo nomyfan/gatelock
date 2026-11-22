@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"image/png"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +88,8 @@ func testApp(t *testing.T) *app {
 	running, _ := h.Begin(history.Activity{Vault: "prod-api", Argv: []string{"npm", "run", "dev"}, Cwd: "/work/api", Caller: caller.ClaudeCode}, func() {})
 	running.Authorized()
 
-	a := &app{home: dir, vaults: v, history: h, remote: &remote{path: filepath.Join(dir, "telegram.json"), kc: memKeychain{}}}
+	px := newProxy(filepath.Join(dir, "settings.json"))
+	a := &app{home: dir, vaults: v, history: h, proxy: px, remote: &remote{path: filepath.Join(dir, "telegram.json"), kc: memKeychain{}, rt: px.transport}}
 	a.view.page = pageActivities
 	a.refresh()
 	return a
@@ -667,7 +670,7 @@ func TestTokenPerPairing(t *testing.T) {
 	pairIn := func(token string) *remote {
 		t.Helper()
 		r := &remote{path: filepath.Join(t.TempDir(), "telegram.json"), kc: kc}
-		bot, err := telegram.New(token)
+		bot, err := telegram.New(token, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -736,7 +739,7 @@ func (k *flakyKeychain) Delete(a string) error {
 func TestDisconnectAgain(t *testing.T) {
 	kc := &flakyKeychain{memKeychain: memKeychain{}}
 	r := &remote{path: filepath.Join(t.TempDir(), "telegram.json"), kc: kc}
-	bot, err := telegram.New("1:first")
+	bot, err := telegram.New("1:first", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -864,4 +867,249 @@ func TestTelegramSetupCard(t *testing.T) {
 	if _, paired := a.remote.paired(); paired {
 		t.Fatal("still paired")
 	}
+}
+
+func TestParseProxy(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                             "",
+		"  ":                           "",
+		"127.0.0.1:7890":               "http://127.0.0.1:7890",
+		" http://127.0.0.1:7890/ ":     "http://127.0.0.1:7890",
+		"socks5://127.0.0.1:7890":      "socks5://127.0.0.1:7890",
+		"socks5h://u:p@127.0.0.1:1080": "socks5h://u:p@127.0.0.1:1080",
+		"https://proxy.example":        "https://proxy.example",
+	} {
+		u, err := parseProxy(in)
+		if err != nil {
+			t.Errorf("%q: %v", in, err)
+			continue
+		}
+		got := ""
+		if u != nil {
+			got = u.String()
+		}
+		if got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+	for _, bad := range []string{"ftp://127.0.0.1:21", "http://", "http://127.0.0.1:7890/path", "http://127.0.0.1:7890?x=1", "http://u:secret@[::1"} {
+		if _, err := parseProxy(bad); err == nil {
+			t.Errorf("%q taken", bad)
+		} else if strings.Contains(err.Error(), "secret") {
+			t.Errorf("%q: the error repeats it: %v", bad, err)
+		}
+	}
+}
+
+// The proxy set is kept, and the bots' connections go through it; with
+// none set, through the environment's.
+func TestProxyKept(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	req, _ := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot1:x/getMe", nil)
+	p := newProxy(path)
+	if err := p.set("socks5://127.0.0.1:7890"); err != nil {
+		t.Fatal(err)
+	}
+	again := newProxy(path)
+	if again.String() != "socks5://127.0.0.1:7890" {
+		t.Fatalf("read back %q", again.String())
+	}
+	if u, err := again.transport.Proxy(req); err != nil || u == nil || u.String() != "socks5://127.0.0.1:7890" {
+		t.Fatalf("connects through %v, %v", u, err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("settings.json is %v", fi.Mode())
+	}
+	if err := again.set(""); err != nil {
+		t.Fatal(err)
+	}
+	if newProxy(path).String() != "" {
+		t.Fatal("still kept")
+	}
+	u, err := again.transport.Proxy(req)
+	want, wantErr := http.ProxyFromEnvironment(req)
+	if (u == nil) != (want == nil) || u != nil && u.String() != want.String() || err != wantErr {
+		t.Fatalf("connects through %v, %v; the environment's is %v, %v", u, err, want, wantErr)
+	}
+	if err := again.set("ftp://x"); err == nil {
+		t.Fatal("a bad proxy taken")
+	}
+}
+
+func TestProxyOnSetupCard(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageSetup
+	a.view.setup.checked = true
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if err := tt.Click("Proxy"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("ftp://127.0.0.1")
+	if err := tt.Click("Save"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if a.proxy.String() != "" || !tt.HasText("that is not a proxy") {
+		t.Fatalf("a bad proxy: %q, %q", a.proxy.String(), tt.Texts())
+	}
+	a.view.setup.telegram.proxy = ""
+	tt.Frame()
+	if err := tt.Click("Proxy"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("127.0.0.1:7890")
+	if err := tt.Click("Save"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if a.proxy.String() != "http://127.0.0.1:7890" || a.view.setup.telegram.proxy != "http://127.0.0.1:7890" {
+		t.Fatalf("set %q, shown %q", a.proxy.String(), a.view.setup.telegram.proxy)
+	}
+	if !tt.HasText("Proxy saved") {
+		t.Fatalf("%q", tt.Texts())
+	}
+	if in, _ := tt.Access("Proxy"); in.Value != "http://127.0.0.1:7890" {
+		t.Fatalf("the proxy kept not shown: %+v", in)
+	}
+
+	// Shown while paired too.
+	pairTelegram(a)
+	tt.Frame()
+	if !tt.HasText("Asks Ada (@ada) through @my_gatelock_bot") {
+		t.Fatalf("paired: %q", tt.Texts())
+	}
+	if err := tt.Click("Proxy"); err != nil {
+		t.Fatalf("paired: %v", err)
+	}
+	snapshot(t, tt, "setup-proxy")
+}
+
+// A token checked through a proxy that is not there says Telegram could
+// not be reached, not that no one pressed Start in time.
+func TestUnreachable(t *testing.T) {
+	p := newProxy(filepath.Join(t.TempDir(), "settings.json"))
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	if err := p.set("http://" + addr); err != nil {
+		t.Fatal(err)
+	}
+	bot, err := telegram.New("1:x", p.transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = bot.Me(context.Background())
+	err = unreachable(err)
+	if err == nil || !strings.Contains(err.Error(), "Could not reach Telegram") || !strings.Contains(err.Error(), addr) {
+		t.Fatalf("got %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	defer cancel()
+	_, err = bot.Me(ctx)
+	if err = unreachable(err); errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "Could not reach Telegram") {
+		t.Fatalf("timed out: %v", err)
+	}
+	for _, kept := range []error{nil, context.Canceled, telegram.ErrWebhook, &telegram.APIError{Method: "getMe", Code: 401, Description: "Unauthorized"}} {
+		if got := unreachable(kept); got != kept {
+			t.Errorf("%v became %v", kept, got)
+		}
+	}
+}
+
+// Entering the Setup page checks that Telegram can be reached, once, and
+// shows what the check found.
+func TestReachCheckedOnEnteringSetup(t *testing.T) {
+	a := testApp(t)
+	a.view.setup.checked = true
+	if err := a.proxy.set("127.0.0.1:7890"); err != nil {
+		t.Fatal(err)
+	}
+	a.view.setup.telegram.proxy = a.proxy.String()
+	calls, returned := make(chan struct{}, 4), make(chan struct{}, 4)
+	a.reach = func(ctx context.Context) error {
+		defer func() { returned <- struct{}{} }()
+		calls <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	r := &a.view.setup.telegram.reach
+	// A check still under way if the test ends early is dropped, so that
+	// it leaves the UI alone.
+	t.Cleanup(func() {
+		if r.cancel != nil {
+			r.cancel()
+		}
+	})
+	// found stands in for the check under way finding took and err: it
+	// ends the check, which then leaves the UI alone, as one dropped does.
+	found := func(took time.Duration, err error) {
+		t.Helper()
+		r.cancel()
+		select {
+		case <-returned:
+		case <-time.After(time.Second):
+			t.Fatal("the check did not end")
+		}
+		a.reached(r.gen, took, err)
+	}
+	called := func() bool {
+		select {
+		case <-calls:
+			return true
+		case <-time.After(time.Second):
+			return false
+		}
+	}
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if err := tt.Click("Setup"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !called() {
+		t.Fatal("not checked on entering")
+	}
+	if !tt.HasText("Checking that Telegram can be reached through 127.0.0.1:7890") {
+		t.Fatalf("%q", tt.Texts())
+	}
+	tt.Frame()
+	select {
+	case <-calls:
+		t.Fatal("checked again without leaving")
+	default:
+	}
+
+	a.reached(r.gen-1, time.Second, errors.New("an older check's"))
+	if !r.checking {
+		t.Fatal("an older check's result taken")
+	}
+	found(230*time.Millisecond, nil)
+	tt.Frame()
+	if !tt.HasText("Telegram is reachable through 127.0.0.1:7890, in 230ms") {
+		t.Fatalf("reached: %q", tt.Texts())
+	}
+
+	if err := tt.Click("Activities"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("Setup"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !called() {
+		t.Fatal("not checked on entering again")
+	}
+	found(15*time.Second, errors.New("proxyconnect tcp: connection refused"))
+	tt.Frame()
+	if !tt.HasText("Telegram can't be reached through 127.0.0.1:7890: proxyconnect tcp: connection refused") {
+		t.Fatalf("not reached: %q", tt.Texts())
+	}
+	snapshot(t, tt, "setup-unreachable")
 }

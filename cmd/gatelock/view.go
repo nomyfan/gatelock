@@ -32,7 +32,10 @@ func pageVault(name string) string { return "vault/" + name }
 // viewState is what the main window shows, beyond the vaults and the
 // activities.
 type viewState struct {
-	page       string
+	page string
+	// entered is the page last shown, so that a page can tell it is
+	// entered; "" while the window is closed.
+	entered    string
 	vaults     []vault.Vault
 	activities []history.Activity
 	running    int
@@ -130,6 +133,12 @@ func (a *app) mainView(c *ui.Context) {
 	if v.toast != "" {
 		c.Toast(v.toast)
 		v.toast = ""
+	}
+	if v.entered != v.page {
+		v.entered = v.page
+		if v.page == pageSetup {
+			a.checkReach()
+		}
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyB) {
 		v.sidebarHidden = !v.sidebarHidden

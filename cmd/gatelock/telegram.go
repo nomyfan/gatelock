@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -43,6 +44,7 @@ func ownTokenAccount(account string) bool {
 type remote struct {
 	path string
 	kc   vault.Keychain
+	rt   http.RoundTripper // the bots', http.DefaultTransport if nil
 
 	mu       sync.Mutex
 	config   *telegram.Config // nil while not paired
@@ -109,7 +111,7 @@ func (r *remote) ask(ctx context.Context, p vault.Prompt) error {
 		if err != nil {
 			return errors.New("the Telegram bot's token is not in the Keychain: set Telegram up again")
 		}
-		bot, err := telegram.New(string(token))
+		bot, err := telegram.New(string(token), r.rt)
 		if err != nil {
 			return err
 		}
@@ -209,10 +211,98 @@ func (a *app) ConfirmUser(ctx context.Context, p vault.Prompt) error {
 type telegramSetup struct {
 	token string
 	busy  bool
+	// proxy is the proxy typed, the one set until changed.
+	proxy string
+	reach reachState
 	// link opens the bot's chat, where the user presses Start to pair,
 	// while pairing; cancel stops pairing.
 	link   string
 	cancel context.CancelFunc
+}
+
+// reachState is what checking that Telegram can be reached found.
+type reachState struct {
+	checked  bool // a check was started
+	checking bool
+	route    string // as proxy.route says, when the check began
+	took     time.Duration
+	err      error
+	// gen tells a check's result from an older one's; cancel drops the
+	// check under way.
+	gen    int
+	cancel context.CancelFunc
+}
+
+// checkReach checks, in the background, that Telegram can be reached as
+// it is now, dropping the check under way, if any.
+func (a *app) checkReach() {
+	r := &a.view.setup.telegram.reach
+	if r.cancel != nil {
+		r.cancel()
+	}
+	if a.reach == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	r.gen++
+	gen := r.gen
+	*r = reachState{checked: true, checking: true, route: a.proxy.route(), gen: gen, cancel: cancel}
+	go func() {
+		defer cancel()
+		start := time.Now()
+		err := a.reach(ctx)
+		took := time.Since(start)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return // dropped
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = errors.New("no answer in 15 seconds")
+		}
+		mygo.RunOnMain(func() { a.reached(gen, took, err) })
+	}()
+}
+
+// reached shows what the check gen found, unless another was started
+// since.
+func (a *app) reached(gen int, took time.Duration, err error) {
+	r := &a.view.setup.telegram.reach
+	if r.gen != gen {
+		return
+	}
+	r.checking, r.took, r.err, r.cancel = false, took, err, nil
+	if a.win != nil {
+		a.win.Invalidate()
+	}
+}
+
+// reachLine is the card's line saying whether Telegram can be reached.
+func (a *app) reachLine(c *ui.Context) {
+	t := c.Theme()
+	r := &a.view.setup.telegram.reach
+	if !r.checked {
+		return
+	}
+	text, color := "Checking that Telegram can be reached "+r.route+"…", t.TextMuted
+	switch {
+	case r.checking:
+	case r.err != nil:
+		text, color = "Telegram can't be reached "+r.route+": "+r.err.Error(), t.Danger
+	default:
+		text, color = "Telegram is reachable "+r.route+", in "+r.took.Round(time.Millisecond).String(), t.Success
+	}
+	ui.Text(c, text).FontSize(t.FontSize - 1).TextColor(color).Wrap()
+}
+
+// unreachable is the error of checking a bot's token: one that is not
+// the Bot API's answer, nor canceling, says Telegram could not be
+// reached, and is not wrapped, as the check timing out is not pairing
+// doing so.
+func unreachable(err error) error {
+	var api *telegram.APIError
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, telegram.ErrWebhook) || errors.As(err, &api) {
+		return err
+	}
+	return errors.New("Could not reach Telegram (" + err.Error() + "). If it is blocked on this network, set a proxy below.")
 }
 
 // connectTelegram checks the token typed, then waits for the user to pair
@@ -220,7 +310,7 @@ type telegramSetup struct {
 func (a *app) connectTelegram() {
 	s := &a.view.setup.telegram
 	token := strings.TrimSpace(s.token)
-	bot, err := telegram.New(token)
+	bot, err := telegram.New(token, a.remote.rt)
 	if err != nil {
 		a.view.toast = err.Error()
 		return
@@ -232,6 +322,7 @@ func (a *app) connectTelegram() {
 		check, done := context.WithTimeout(ctx, 15*time.Second)
 		me, err := bot.Me(check)
 		done()
+		err = unreachable(err)
 		var user telegram.User
 		if err == nil {
 			code := telegram.NewCode()
@@ -291,25 +382,55 @@ func (a *app) telegramCard(c *ui.Context) {
 				}
 			}
 		})
-		if paired {
-			return
-		}
-		divider(c)
-		if s.link != "" {
+		switch {
+		case paired:
+		case s.link != "":
+			divider(c)
 			ui.Row(c).AlignItems(ui.Center).Gap(t.Space(2)).Padding(t.Space(2.5), 0).Children(func() {
 				ui.Text(c, s.link).Font("monospace").FontSize(t.FontSize - 1).Selectable().Grow(1).MinWidth(0).SingleLine()
 				if primaryButton(c, "Open Chat").Clicked() {
 					c.OpenURL(s.link)
 				}
 			})
-			return
+		default:
+			divider(c)
+			ui.Row(c).AlignItems(ui.Center).Gap(t.Space(2)).Padding(t.Space(2.5), 0).Children(func() {
+				input := ui.TextInput(c.Key("telegram-token"), &s.token).Password().Placeholder("Bot token").Label("Bot token").Grow(1).Disabled(s.busy)
+				connect := primaryButton(c, "Connect").Disabled(s.busy || strings.TrimSpace(s.token) == "")
+				if (connect.Clicked() || input.Submitted()) && !s.busy && strings.TrimSpace(s.token) != "" {
+					a.connectTelegram()
+				}
+			})
 		}
-		ui.Row(c).AlignItems(ui.Center).Gap(t.Space(2)).Padding(t.Space(2.5), 0).Children(func() {
-			input := ui.TextInput(c.Key("telegram-token"), &s.token).Password().Placeholder("Bot token").Label("Bot token").Grow(1).Disabled(s.busy)
-			connect := primaryButton(c, "Connect").Disabled(s.busy || strings.TrimSpace(s.token) == "")
-			if (connect.Clicked() || input.Submitted()) && !s.busy && strings.TrimSpace(s.token) != "" {
-				a.connectTelegram()
-			}
+		divider(c)
+		ui.Column(c).Gap(t.Space(1)).Padding(t.Space(2.5), 0).Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(t.Space(2)).Children(func() {
+				changed := strings.TrimSpace(s.proxy) != a.proxy.String()
+				input := ui.TextInput(c.Key("telegram-proxy"), &s.proxy).Placeholder("Proxy, such as http://127.0.0.1:7890").Label("Proxy").Grow(1)
+				save := ui.Button(c, "Save").Disabled(!changed)
+				if (save.Clicked() || input.Submitted()) && changed {
+					a.setProxy()
+				}
+			})
+			a.reachLine(c)
+			ui.Text(c, "Telegram is reached through this proxy, else through HTTPS_PROXY if the app has it, else directly. The proxy looks up Telegram's address, so a Mac whose DNS gives a wrong one still reaches it.").
+				FontSize(t.FontSize - 1).TextColor(t.TextMuted).Wrap()
 		})
 	})
+}
+
+// setProxy keeps the proxy typed as the one Telegram is reached through.
+func (a *app) setProxy() {
+	s := &a.view.setup.telegram
+	if err := a.proxy.set(s.proxy); err != nil {
+		a.view.toast = err.Error()
+		return
+	}
+	s.proxy = a.proxy.String()
+	a.checkReach()
+	if s.proxy == "" {
+		a.view.toast = "Proxy removed"
+	} else {
+		a.view.toast = "Proxy saved"
+	}
 }
