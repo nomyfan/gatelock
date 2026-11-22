@@ -13,9 +13,11 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// setupState is the Setup page's: where the command line tool is, and
-// whether the user's shell finds it.
+// setupState is the Setup page's: where the command line tool is, whether
+// the user's shell finds it, and Telegram's card.
 type setupState struct {
+	telegram telegramSetup
+
 	checked bool
 	// linked is what ~/.local/bin/gatelock links to, "" if nothing.
 	linked string
@@ -101,7 +103,9 @@ func agentNote(command string) string {
 
 Commands that need credentials run through Gatelock, which puts a vault's env in the command's environment and masks the values in its output:
 
-    ` + command + ` run <vault> -- <command> [args...]
+    ` + command + ` run --reason "<why it needs the vault>" <vault> -- <command> [args...]
+
+Gatelock shows the reason to the user when it asks them, so say in a few words what the command is for, such as "deploy the hotfix to production".
 
 The shell expands $VARS before Gatelock adds the env, so to use one in the command's arguments, let a shell inside expand it:
 
@@ -111,7 +115,7 @@ For a command that runs for long, such as a dev server, add --no-record-output b
 
     ` + command + ` run --no-record-output <vault> -- npm run dev
 
-Ask the user which vault to use. Do not try to print or read the values.
+Ask the user which vault to use. Do not try to print or read the values. If Gatelock says the user denied a run, and why, do as the reason says rather than run it again.
 `
 }
 
@@ -156,6 +160,7 @@ func (a *app) setupPage(c *ui.Context) {
 					})
 				}
 			})
+			a.telegramCard(c)
 			command := "gatelock"
 			if s.pathChecked && !s.onPath {
 				command = cliPath()

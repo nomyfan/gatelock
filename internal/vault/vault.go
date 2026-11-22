@@ -45,6 +45,26 @@ var (
 	ErrKeychainStale = errors.New("passphrase changed, but the Keychain could not be updated")
 )
 
+// DeniedError is a denial that says where it was given, and why, if the
+// user said. It is ErrDenied to errors.Is.
+type DeniedError struct {
+	By     string // where the user denied it, such as "Telegram"
+	Reason string // what the user said, if anything
+}
+
+func (e *DeniedError) Error() string {
+	msg := ErrDenied.Error()
+	if e.By != "" {
+		msg += " in " + e.By
+	}
+	if e.Reason != "" {
+		msg += ": " + e.Reason
+	}
+	return msg
+}
+
+func (e *DeniedError) Is(target error) bool { return target == ErrDenied }
+
 // workFactor is the scrypt work factor of passphrases, age's default; tests
 // lower it.
 var workFactor = 18
@@ -73,7 +93,10 @@ type Vault struct {
 	Name     string
 	Policy   Policy
 	Keychain bool // whether the Keychain keeps its passphrase
-	Envs     []Env
+	// Remote is whether commands may be approved away from the Mac, as
+	// well as at it. It takes effect only with the Keychain.
+	Remote bool
+	Envs   []Env
 	// Unlocked is whether a Resolve needs no authorization, until Expires
 	// if that is set.
 	Unlocked bool
@@ -93,12 +116,26 @@ type Secret struct {
 	Sensitive bool
 }
 
+// Prompt is what the user is asked to approve.
+type Prompt struct {
+	Vault  string
+	Reason string // what for, as "unlock prod to run make deploy"
+	// Command is where Reason names the command to run, as byte offsets:
+	// Reason[Command[0]:Command[1]], so that a display can set it apart.
+	// Both are 0 when it names none.
+	Command [2]int
+	// Remote is set when the user may approve away from the Mac too: the
+	// vault allows it, the Keychain keeps its passphrase, and a command
+	// asks, not the user in the app.
+	Remote bool
+}
+
 // Authorizer asks the user. Both methods return an error wrapping ErrDenied
 // when the user declines, and ctx's error when it is done first.
 type Authorizer interface {
 	// ConfirmUser asks the person at the Mac to approve, with Touch ID or
-	// their login password.
-	ConfirmUser(ctx context.Context, reason string) error
+	// their login password, or, if p.Remote, wherever else they approve.
+	ConfirmUser(ctx context.Context, p Prompt) error
 	// AskPassphrase asks for the passphrase of vault; retry is set
 	// when the one given before was wrong.
 	AskPassphrase(ctx context.Context, vault, reason string, retry bool) ([]byte, error)
@@ -148,7 +185,9 @@ type meta struct {
 	Recipient string     `json:"recipient"`
 	Policy    metaPolicy `json:"policy"`
 	Keychain  bool       `json:"keychain"`
-	Envs      []metaEnv  `json:"envs"`
+	// Remote is left out while off, as in the metas written before it.
+	Remote bool      `json:"remote,omitempty"`
+	Envs   []metaEnv `json:"envs"`
 }
 
 type metaPolicy struct {
@@ -232,6 +271,7 @@ func (sv *stored) vault() Vault {
 		Name:     sv.meta.Name,
 		Policy:   Policy{Mode: sv.meta.Policy.Mode, TTL: time.Duration(sv.meta.Policy.TTLSeconds) * time.Second},
 		Keychain: sv.meta.Keychain,
+		Remote:   sv.meta.Remote,
 	}
 	if sv.identity != nil && (sv.expires.IsZero() || time.Now().Before(sv.expires)) {
 		vault.Unlocked, vault.Expires = true, sv.expires
@@ -351,6 +391,14 @@ func (s *Store) SetPolicy(name string, p Policy) error {
 	return s.update(name, func(sv *stored) error {
 		sv.meta.Policy = metaPolicy{Mode: p.Mode, TTLSeconds: int64(p.TTL / time.Second)}
 		sv.lock()
+		return nil
+	})
+}
+
+// SetRemote sets whether commands may be approved away from the Mac.
+func (s *Store) SetRemote(name string, on bool) error {
+	return s.update(name, func(sv *stored) error {
+		sv.meta.Remote = on
 		return nil
 	})
 }
@@ -508,9 +556,24 @@ func DotenvExample(envs []Env) []byte {
 // an authorization within its Policy holds. Under TTL and Session, requests
 // that come while the user is asked share their answer; under Every, each
 // asks. It fails with ErrNotFound, an error wrapping ErrDenied, or ctx's
-// error, which also dismisses the question asked.
+// error, which also dismisses the question asked. It is for the user in
+// the app, who is asked at the Mac.
 func (s *Store) Resolve(ctx context.Context, name, reason string) ([]Secret, error) {
-	identity, err := s.unlock(ctx, name, reason)
+	return s.resolve(ctx, Prompt{Vault: name, Reason: reason})
+}
+
+// ResolveRemote is Resolve for a command, which the user may approve away
+// from the Mac too, if the vault allows it; command is where reason names
+// the command, as Prompt.Command.
+func (s *Store) ResolveRemote(ctx context.Context, name, reason string, command [2]int) ([]Secret, error) {
+	return s.resolve(ctx, Prompt{Vault: name, Reason: reason, Command: command, Remote: true})
+}
+
+// resolve resolves the vault p names, asking with p if need be; p.Remote
+// asks for it to be set, if the vault allows it.
+func (s *Store) resolve(ctx context.Context, p Prompt) ([]Secret, error) {
+	name := p.Vault
+	identity, err := s.unlock(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -549,8 +612,9 @@ func (s *Store) Resolve(ctx context.Context, name, reason string) ([]Secret, err
 }
 
 // unlock returns the vault's private key, from its unlock if one holds,
-// or else asking the user, and keeping it as the policy allows.
-func (s *Store) unlock(ctx context.Context, name, reason string) (*age.HybridIdentity, error) {
+// or else asking the user with p, and keeping it as the policy allows.
+func (s *Store) unlock(ctx context.Context, p Prompt) (*age.HybridIdentity, error) {
+	name := p.Vault
 	if identity, _, err := s.unlocked(name); identity != nil || err != nil {
 		return identity, err
 	}
@@ -566,9 +630,10 @@ func (s *Store) unlock(ctx context.Context, name, reason string) (*age.HybridIde
 	}
 	s.mu.Lock()
 	id, keychain, policy, gen := sv.id, sv.meta.Keychain, sv.meta.Policy, sv.gen
+	p.Remote = p.Remote && sv.meta.Remote
 	s.mu.Unlock()
 
-	identity, err = s.authorize(ctx, id, name, keychain, reason)
+	identity, err = s.authorize(ctx, id, keychain, p)
 	if err != nil {
 		return nil, err
 	}
@@ -602,8 +667,10 @@ func (s *Store) unlocked(name string) (*age.HybridIdentity, *stored, error) {
 // authorize asks the user, and returns the vault's private key. With
 // the Keychain, the user confirms and the Keychain's passphrase decrypts
 // the key; if it is missing or wrong, the user gives the passphrase, which
-// the Keychain then keeps.
-func (s *Store) authorize(ctx context.Context, id, name string, keychain bool, reason string) (*age.HybridIdentity, error) {
+// the Keychain then keeps. Without it, the user gives the passphrase, at
+// the Mac, whatever p.Remote says.
+func (s *Store) authorize(ctx context.Context, id string, keychain bool, p Prompt) (*age.HybridIdentity, error) {
+	name, reason := p.Vault, p.Reason
 	wrapped, err := os.ReadFile(filepath.Join(s.dir, id, "identity.age"))
 	if err != nil {
 		return nil, err
@@ -612,7 +679,7 @@ func (s *Store) authorize(ctx context.Context, id, name string, keychain bool, r
 		identity, _, err := s.askPassphrase(ctx, name, reason, wrapped)
 		return identity, err
 	}
-	if err := s.auth.ConfirmUser(ctx, reason); err != nil {
+	if err := s.auth.ConfirmUser(ctx, p); err != nil {
 		return nil, err
 	}
 	if passphrase, err := s.kc.Get(id); err == nil {
@@ -729,7 +796,7 @@ func (s *Store) ChangePassphrase(ctx context.Context, name string, passphrase []
 	id, keychain := sv.id, sv.meta.Keychain
 	s.mu.Unlock()
 
-	identity, err := s.authorize(ctx, id, name, keychain, "change the passphrase")
+	identity, err := s.authorize(ctx, id, keychain, Prompt{Vault: name, Reason: "change the passphrase"})
 	if err != nil {
 		return err
 	}

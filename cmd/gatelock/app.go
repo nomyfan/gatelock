@@ -18,7 +18,6 @@ import (
 
 	"gatelock/internal/history"
 	"gatelock/internal/ipc"
-	"gatelock/internal/macauth"
 	"gatelock/internal/vault"
 )
 
@@ -28,6 +27,9 @@ type app struct {
 	home    string
 	vaults  *vault.Store
 	history *history.Store
+	// remote is the Telegram pairing, where the vaults that allow it
+	// also ask.
+	remote *remote
 
 	win      *mygo.Window // the main window, nil while closed
 	tray     *mygo.Tray
@@ -51,7 +53,8 @@ func runApp() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	a := &app{home: dir}
+	a := &app{home: dir, remote: &remote{path: filepath.Join(dir, "telegram.json"), kc: keychain{}}}
+	a.remote.load()
 	if a.vaults, err = vault.Open(filepath.Join(dir, "vaults"), keychain{}, a); err != nil {
 		log.Fatal(err)
 	}
@@ -257,12 +260,6 @@ func (keychain) Delete(account string) error {
 		return err
 	}
 	return nil
-}
-
-// ConfirmUser asks with Touch ID or the login password; app is the vault's
-// Authorizer.
-func (a *app) ConfirmUser(ctx context.Context, reason string) error {
-	return macauth.ConfirmUser(ctx, reason)
 }
 
 // AskPassphrase asks in a window of its own, in front of the others.

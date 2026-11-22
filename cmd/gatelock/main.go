@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 )
 
-const usage = `usage: gatelock run [--no-record-output] <vault> [--] <command> [args...]
+const usage = `usage: gatelock run [--reason <why>] [--no-record-output] <vault> [--] <command> [args...]
 
 Runs the command with the vault's env, once you authorize it in
 Gatelock, and masks their values in its output.
 
+  --reason <why>      say why the command needs the vault, which Gatelock
+                      shows when it asks you, and keeps in its record
   --no-record-output  keep the command's output out of Gatelock's record
                       of activities, as for a dev server; the activity
                       still shows there, and can be stopped`

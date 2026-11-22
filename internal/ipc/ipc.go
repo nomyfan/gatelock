@@ -22,11 +22,13 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 
 	"gatelock/internal/caller"
 	"gatelock/internal/history"
+	"gatelock/internal/shell"
 	"gatelock/internal/vault"
 )
 
@@ -46,12 +48,16 @@ type frame struct {
 	Argv           []string `json:"argv,omitempty"`
 	Cwd            string   `json:"cwd,omitempty"`
 	NoRecordOutput bool     `json:"no_record_output,omitempty"`
+	Purpose        string   `json:"purpose,omitempty"`
 	// granted
 	ActivityID string         `json:"activity_id,omitempty"`
 	Env        []vault.Secret `json:"env,omitempty"`
 	// error
 	Error   string `json:"error,omitempty"`
 	Message string `json:"message,omitempty"`
+	// error denied: where the user denied it, and why, if they said
+	DeniedBy   string `json:"denied_by,omitempty"`
+	DenyReason string `json:"deny_reason,omitempty"`
 	// started
 	PGID int `json:"pgid,omitempty"`
 	// output
@@ -164,12 +170,17 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 		return
 	}
 
+	purpose := cleanPurpose(req.Purpose)
+
 	// The CLI stops the command once the run is granted. Before, stopping
 	// dismisses the question, and the run ends without the command.
 	ctx, cancel := context.WithCancel(context.Background())
 	var mu sync.Mutex
 	granted, stopped := false, false
-	rec, err := h.Begin(req.Vault, req.Argv, req.Cwd, by, req.NoRecordOutput, func() {
+	rec, err := h.Begin(history.Activity{
+		Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd,
+		Caller: by, Purpose: purpose, OutputNotRecorded: req.NoRecordOutput,
+	}, func() {
 		mu.Lock()
 		defer mu.Unlock()
 		if granted {
@@ -199,11 +210,18 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 		}
 	}()
 
-	reason := fmt.Sprintf("unlock %s to run %s", req.Vault, strings.Join(req.Argv, " "))
+	reason := "unlock " + req.Vault + " to run "
 	if by != "" {
-		reason = fmt.Sprintf("unlock %s for %s to run %s", req.Vault, by, strings.Join(req.Argv, " "))
+		reason = "unlock " + req.Vault + " for " + by + " to run "
 	}
-	secrets, err := v.Resolve(ctx, req.Vault, reason)
+	command := [2]int{len(reason), 0}
+	reason += shell.Join(req.Argv)
+	command[1] = len(reason)
+	if purpose != "" {
+		// Quoted, so that it cannot pass for what Gatelock says.
+		reason += ` (reason given: "` + purpose + `")`
+	}
+	secrets, err := v.ResolveRemote(ctx, req.Vault, reason, command)
 	mu.Lock()
 	switch {
 	case stopped:
@@ -217,8 +235,12 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 		return
 	case errors.Is(err, vault.ErrDenied):
 		mu.Unlock()
-		rec.End(history.Denied)
-		c.write(frame{Type: "error", Error: errDenied, Message: "authorization denied"})
+		var denied *vault.DeniedError
+		if !errors.As(err, &denied) {
+			denied = &vault.DeniedError{}
+		}
+		rec.Denied(denied.By, denied.Reason)
+		c.write(frame{Type: "error", Error: errDenied, Message: denied.Error(), DeniedBy: denied.By, DenyReason: denied.Reason})
 		return
 	case err != nil:
 		mu.Unlock()
@@ -260,6 +282,30 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 		go killGroup(pgid)
 	}
 	rec.End(history.Lost)
+}
+
+// maxPurpose is the most of a purpose kept, in runes.
+const maxPurpose = 200
+
+// cleanPurpose makes the purpose a command gives one line of plain text,
+// to show the user in quotes: control characters, line breaks among them,
+// become spaces, runs of spaces one, double quotes single ones, and it is
+// cut to maxPurpose runes.
+func cleanPurpose(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '"':
+			return '\''
+		case unicode.IsControl(r) || unicode.IsSpace(r) || unicode.Is(unicode.Cf, r):
+			return ' '
+		}
+		return r
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > maxPurpose {
+		s = string(r[:maxPurpose-1]) + "…"
+	}
+	return s
 }
 
 func checkRequest(req frame, v *vault.Store) string {
@@ -322,6 +368,9 @@ type RunRequest struct {
 	// NoRecordOutput asks the app not to keep the command's output; the
 	// activity is recorded still, and can be stopped.
 	NoRecordOutput bool
+	// Purpose is why the command runs, as the caller says, to show the
+	// user; it may be empty.
+	Purpose string
 }
 
 // Session is a run the app authorized, as the CLI reports it.
@@ -356,10 +405,11 @@ func Dial(socketPath string, start func() error) (net.Conn, error) {
 
 // Run asks the app over nc to run a command, and waits for the user to
 // authorize it. It returns the vault's values, or an error wrapping
-// vault.ErrNotFound, vault.ErrDenied, or another with the app's message.
+// vault.ErrNotFound, a *vault.DeniedError, or another with the app's
+// message.
 func Run(nc net.Conn, req RunRequest) (*Session, []vault.Secret, error) {
 	c := newConn(nc)
-	if err := c.write(frame{Type: "run", Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd, NoRecordOutput: req.NoRecordOutput}); err != nil {
+	if err := c.write(frame{Type: "run", Vault: req.Vault, Argv: req.Argv, Cwd: req.Cwd, NoRecordOutput: req.NoRecordOutput, Purpose: req.Purpose}); err != nil {
 		nc.Close()
 		return nil, nil, err
 	}
@@ -374,7 +424,7 @@ func Run(nc net.Conn, req RunRequest) (*Session, []vault.Secret, error) {
 		case errNotFound:
 			return nil, nil, fmt.Errorf("%w: %s", vault.ErrNotFound, answer.Message)
 		case errDenied:
-			return nil, nil, vault.ErrDenied
+			return nil, nil, &vault.DeniedError{By: answer.DeniedBy, Reason: answer.DenyReason}
 		}
 		return nil, nil, errors.New(answer.Message)
 	}

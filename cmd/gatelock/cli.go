@@ -28,14 +28,28 @@ const bundleID = "dev.callcc.gatelock"
 // runs the command with them in its environment, masks them in its output,
 // and exits as the command does.
 func runCommand(args []string) int {
-	noRecordOutput := len(args) > 0 && args[0] == "--no-record-output"
-	if noRecordOutput {
-		args = args[1:]
-	}
-	// No vault's name begins with "-".
-	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
-		fmt.Fprintf(os.Stderr, "gatelock: unknown option %s\n%s\n", args[0], usage)
-		return exitGatelock
+	var noRecordOutput bool
+	var purpose string
+	// The options come before the vault, whose name never begins with "-".
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		switch opt := args[0]; {
+		case opt == "--no-record-output":
+			noRecordOutput = true
+			args = args[1:]
+		case opt == "--reason":
+			if len(args) < 2 {
+				fmt.Fprintf(os.Stderr, "gatelock: --reason needs a reason\n%s\n", usage)
+				return exitGatelock
+			}
+			purpose = args[1]
+			args = args[2:]
+		case strings.HasPrefix(opt, "--reason="):
+			purpose = strings.TrimPrefix(opt, "--reason=")
+			args = args[1:]
+		default:
+			fmt.Fprintf(os.Stderr, "gatelock: unknown option %s\n%s\n", opt, usage)
+			return exitGatelock
+		}
 	}
 	if len(args) > 1 && args[1] == "--" {
 		args = append(args[:1], args[2:]...)
@@ -62,7 +76,7 @@ func runCommand(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	session, secrets, err := ipc.Run(nc, ipc.RunRequest{Vault: name, Argv: argv, Cwd: cwd, NoRecordOutput: noRecordOutput})
+	session, secrets, err := ipc.Run(nc, ipc.RunRequest{Vault: name, Argv: argv, Cwd: cwd, NoRecordOutput: noRecordOutput, Purpose: purpose})
 	if err != nil {
 		return fail(err)
 	}

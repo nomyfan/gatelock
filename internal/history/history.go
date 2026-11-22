@@ -49,9 +49,16 @@ type Activity struct {
 	// Caller names the program that ran it, if known: a hint, as a
 	// program can pass for another.
 	Caller string `json:"caller,omitempty"`
+	// Purpose is the reason the command gave for running, with
+	// `gatelock run --reason`, if any: the caller's word, not checked.
+	Purpose string `json:"purpose,omitempty"`
 	// OutputNotRecorded is set when `gatelock run` was asked not to record
 	// the command's output, as for a dev server that runs for hours.
 	OutputNotRecorded bool `json:"output_not_recorded,omitempty"`
+	// DeniedBy says where the user denied it, as "Telegram", and
+	// DenyReason why, as they said; either may be empty.
+	DeniedBy   string `json:"denied_by,omitempty"`
+	DenyReason string `json:"deny_reason,omitempty"`
 }
 
 const (
@@ -118,18 +125,18 @@ func Open(dir string, onChange func()) (*Store, error) {
 	return s, nil
 }
 
-// Begin records a command's activity, waiting to be authorized. caller
-// names the program that ran it, or is empty; outputNotRecorded says that
-// the command's output will not be written to it; stop asks the command
-// to stop.
-func (s *Store) Begin(vault string, argv []string, cwd, caller string, outputNotRecorded bool, stop func()) (*Record, error) {
+// Begin records a command's activity, waiting to be authorized: what a
+// gives of its vault, argv, cwd, caller, purpose and whether its output is
+// not recorded. stop asks the command to stop.
+func (s *Store) Begin(a Activity, stop func()) (*Record, error) {
 	r := &Activity{
 		ID:                newID(),
-		Vault:             vault,
-		Argv:              argv,
-		Cwd:               cwd,
-		Caller:            caller,
-		OutputNotRecorded: outputNotRecorded,
+		Vault:             a.Vault,
+		Argv:              a.Argv,
+		Cwd:               a.Cwd,
+		Caller:            a.Caller,
+		Purpose:           a.Purpose,
+		OutputNotRecorded: a.OutputNotRecorded,
 		StartedAt:         time.Now().UTC(),
 		Status:            Authorizing,
 	}
@@ -213,6 +220,14 @@ func (rec *Record) Exited(code int) {
 // End records that the activity ended otherwise than by the command exiting:
 // Denied, Failed or Lost.
 func (rec *Record) End(status Status) { rec.end(func(r *Activity) { r.Status = status }) }
+
+// Denied records that the user denied it, where and why, if known.
+func (rec *Record) Denied(by, reason string) {
+	rec.end(func(r *Activity) {
+		r.Status = Denied
+		r.DeniedBy, r.DenyReason = by, reason
+	})
+}
 
 func (rec *Record) end(change func(*Activity)) {
 	rec.change(func(r *Activity) {

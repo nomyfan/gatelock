@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"image/png"
@@ -15,6 +16,7 @@ import (
 
 	"gatelock/internal/caller"
 	"gatelock/internal/history"
+	"gatelock/internal/telegram"
 	"gatelock/internal/vault"
 )
 
@@ -31,7 +33,7 @@ func (k memKeychain) Delete(a string) error        { delete(k, a); return nil }
 
 type denyAll struct{}
 
-func (denyAll) ConfirmUser(context.Context, string) error { return vault.ErrDenied }
+func (denyAll) ConfirmUser(context.Context, vault.Prompt) error { return vault.ErrDenied }
 func (denyAll) AskPassphrase(context.Context, string, string, bool) ([]byte, error) {
 	return nil, vault.ErrDenied
 }
@@ -39,7 +41,7 @@ func (denyAll) AskPassphrase(context.Context, string, string, bool) ([]byte, err
 // allowAll approves, and gives testApp's passphrase.
 type allowAll struct{}
 
-func (allowAll) ConfirmUser(context.Context, string) error { return nil }
+func (allowAll) ConfirmUser(context.Context, vault.Prompt) error { return nil }
 func (allowAll) AskPassphrase(context.Context, string, string, bool) ([]byte, error) {
 	return []byte("pw"), nil
 }
@@ -77,14 +79,14 @@ func testApp(t *testing.T) *app {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec, _ := h.Begin("prod-api", []string{"npm", "run", "deploy"}, "/work/api", caller.Codex, false, func() {})
+	rec, _ := h.Begin(history.Activity{Vault: "prod-api", Argv: []string{"npm", "run", "deploy"}, Cwd: "/work/api", Caller: caller.Codex}, func() {})
 	rec.Authorized()
 	rec.Write([]byte("deploying with [REDACTED:prod-api/STRIPE_KEY]\n"))
 	rec.Exited(0)
-	running, _ := h.Begin("prod-api", []string{"npm", "run", "dev"}, "/work/api", caller.ClaudeCode, false, func() {})
+	running, _ := h.Begin(history.Activity{Vault: "prod-api", Argv: []string{"npm", "run", "dev"}, Cwd: "/work/api", Caller: caller.ClaudeCode}, func() {})
 	running.Authorized()
 
-	a := &app{home: dir, vaults: v, history: h}
+	a := &app{home: dir, vaults: v, history: h, remote: &remote{path: filepath.Join(dir, "telegram.json"), kc: memKeychain{}}}
 	a.view.page = pageActivities
 	a.refresh()
 	return a
@@ -172,7 +174,7 @@ func TestAddEnv(t *testing.T) {
 func TestStopFromActivitiesPage(t *testing.T) {
 	a := testApp(t)
 	stopped := false
-	rec, _ := a.history.Begin("prod-api", []string{"sleep", "60"}, "/", "", false, func() { stopped = true })
+	rec, _ := a.history.Begin(history.Activity{Vault: "prod-api", Argv: []string{"sleep", "60"}, Cwd: "/"}, func() { stopped = true })
 	rec.Authorized()
 	a.refresh()
 	tt := ui.NewTester(a.mainView, 960, 640)
@@ -204,7 +206,7 @@ func TestActivitiesOpenAndCloseOnTheirOwn(t *testing.T) {
 
 func TestOutputNotRecorded(t *testing.T) {
 	a := testApp(t)
-	rec, _ := a.history.Begin("prod-api", []string{"npm", "run", "serve"}, "/work/api", "", true, func() {})
+	rec, _ := a.history.Begin(history.Activity{Vault: "prod-api", Argv: []string{"npm", "run", "serve"}, Cwd: "/work/api", OutputNotRecorded: true}, func() {})
 	rec.Authorized()
 	a.refresh()
 	tt := ui.NewTester(a.mainView, 960, 640)
@@ -218,8 +220,24 @@ func TestOutputNotRecorded(t *testing.T) {
 }
 
 func TestRunUnknownOption(t *testing.T) {
-	if code := runCommand([]string{"--quiet", "prod-api", "true"}); code != exitGatelock {
-		t.Fatalf("code %d", code)
+	for _, args := range [][]string{
+		{"--quiet", "prod-api", "true"},
+		{"--reason=deploy", "--quiet", "prod-api", "true"},
+		{"--reason"},
+	} {
+		if code := runCommand(args); code != exitGatelock {
+			t.Fatalf("%q: code %d", args, code)
+		}
+	}
+}
+
+func TestPurposeShown(t *testing.T) {
+	a := testApp(t)
+	a.history.Begin(history.Activity{Vault: "prod-api", Argv: []string{"make", "deploy"}, Cwd: "/work/api", Purpose: "deploy the hotfix"}, func() {})
+	a.refresh()
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if !tt.HasText("Reason given: deploy the hotfix") {
+		t.Fatalf("%q", tt.Texts())
 	}
 }
 
@@ -628,5 +646,222 @@ func TestLongKeyKeepsToItsColumn(t *testing.T) {
 	tt.Frame()
 	if wide, _ := column(); wide.W <= narrow.W {
 		t.Fatalf("key %v wide in a wider window, %v before", wide.W, narrow.W)
+	}
+}
+
+// pairTelegram pairs a's Telegram, as its Setup card would.
+func pairTelegram(a *app) {
+	a.remote.mu.Lock()
+	defer a.remote.mu.Unlock()
+	a.remote.set(&telegram.Config{
+		Bot:          telegram.User{ID: 1, IsBot: true, Username: "my_gatelock_bot"},
+		User:         telegram.User{ID: 42, FirstName: "Ada", Username: "ada"},
+		TokenAccount: newTokenAccount(),
+	}, nil)
+}
+
+// Pairings in data directories of their own keep their bots' tokens apart
+// in the one Keychain, so that disconnecting one leaves the others.
+func TestTokenPerPairing(t *testing.T) {
+	kc := memKeychain{}
+	pairIn := func(token string) *remote {
+		t.Helper()
+		r := &remote{path: filepath.Join(t.TempDir(), "telegram.json"), kc: kc}
+		bot, err := telegram.New(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.pair(bot, token, telegram.Config{Bot: telegram.User{ID: 1, IsBot: true}, User: telegram.User{ID: 42}}); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	first, second := pairIn("1:first"), pairIn("2:second")
+	if err := second.forget(); err != nil {
+		t.Fatal(err)
+	}
+	again := &remote{path: first.path, kc: kc}
+	again.load()
+	c, ok := again.paired()
+	if token, err := kc.Get(c.TokenAccount); !ok || err != nil || string(token) != "1:first" {
+		t.Fatalf("the first pairing's token: %q, %v", token, err)
+	}
+	if len(kc) != 1 {
+		t.Fatalf("Keychain holds %d", len(kc))
+	}
+}
+
+// A pairing kept without a token account of its own, such as one whose
+// account names a vault's passphrase, is none, and disconnecting deletes
+// nothing.
+func TestPairingNeedsItsOwnAccount(t *testing.T) {
+	for _, a := range []string{newTokenAccount(), tokenAccount + rand.Text() + rand.Text()} {
+		if !ownTokenAccount(a) {
+			t.Fatalf("%q not its own", a)
+		}
+	}
+	vaultID := rand.Text()
+	kc := memKeychain{"telegram-bot-token": []byte("1:first"), vaultID: []byte("passphrase")}
+	for _, account := range []string{"", `,"token_account":"telegram-bot-token"`, `,"token_account":"` + vaultID + `"`, `,"token_account":"telegram-bot-token-` + vaultID[:25] + `"`, `,"token_account":"telegram-bot-token-` + vaultID + `1"`, `,"token_account":"telegram-bot-token-` + strings.ToLower(vaultID) + `"`} {
+		path := filepath.Join(t.TempDir(), "telegram.json")
+		if err := os.WriteFile(path, []byte(`{"bot":{"id":1,"is_bot":true,"first_name":"Gatelock"},"user":{"id":42,"is_bot":false,"first_name":"Ada"}`+account+`}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r := &remote{path: path, kc: kc}
+		r.load()
+		if _, ok := r.paired(); ok {
+			t.Fatalf("paired with %s", account)
+		}
+		if err := r.forget(); err != nil || len(kc) != 2 {
+			t.Fatalf("disconnecting with %s: %v, %d left", account, err, len(kc))
+		}
+	}
+}
+
+// flakyKeychain fails to delete while fail is set.
+type flakyKeychain struct {
+	memKeychain
+	fail bool
+}
+
+func (k *flakyKeychain) Delete(a string) error {
+	if k.fail {
+		return errors.New("the Keychain is locked")
+	}
+	return k.memKeychain.Delete(a)
+}
+
+// A disconnect that fails to delete the token withdraws the questions
+// open but keeps the pairing, so that disconnecting again finishes it.
+func TestDisconnectAgain(t *testing.T) {
+	kc := &flakyKeychain{memKeychain: memKeychain{}}
+	r := &remote{path: filepath.Join(t.TempDir(), "telegram.json"), kc: kc}
+	bot, err := telegram.New("1:first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pair(bot, "1:first", telegram.Config{Bot: telegram.User{ID: 1, IsBot: true}, User: telegram.User{ID: 42}}); err != nil {
+		t.Fatal(err)
+	}
+	pairing := r.pairing
+	kc.fail = true
+	if err := r.forget(); err == nil {
+		t.Fatal("disconnected without deleting the token")
+	}
+	if pairing.Err() == nil {
+		t.Fatal("questions open not withdrawn")
+	}
+	if _, ok := r.paired(); !ok || r.pairing.Err() != nil {
+		t.Fatal("the pairing is gone, with its token left")
+	}
+	if _, err := os.Stat(r.path); err != nil {
+		t.Fatal(err)
+	}
+	kc.fail = false
+	if err := r.forget(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.paired(); ok || len(kc.memKeychain) != 0 {
+		t.Fatalf("paired %v, Keychain holds %d", ok, len(kc.memKeychain))
+	}
+	if _, err := os.Stat(r.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("telegram.json: %v", err)
+	}
+}
+
+// Disconnecting withdraws the questions asked in Telegram, which wait on
+// the pairing.
+func TestDisconnectWithdraws(t *testing.T) {
+	a := testApp(t)
+	pairTelegram(a)
+	pairing := a.remote.pairing
+	if err := a.remote.forget(); err != nil {
+		t.Fatal(err)
+	}
+	if pairing.Err() == nil {
+		t.Fatal("the pairing goes on")
+	}
+	if err := a.remote.ask(context.Background(), vault.Prompt{}); !errors.Is(err, errUnpaired) {
+		t.Fatalf("asked unpaired: %v", err)
+	}
+}
+
+func TestAlsoAskInTelegram(t *testing.T) {
+	a := testApp(t)
+	tt := ui.NewTester(a.mainView, 960, 640)
+	tt.Click("prod-api")
+	if err := tt.Click("Settings…"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("Set Telegram up on the Setup page first.") {
+		t.Fatalf("not paired: %q", tt.Texts())
+	}
+	tt.Click("Ask in Telegram too")
+	if vt, _ := a.vaults.Vault("prod-api"); vt.Remote {
+		t.Fatal("turned on without Telegram")
+	}
+
+	pairTelegram(a)
+	tt.Frame()
+	if !tt.HasText("Telegram is sent the command line.") {
+		t.Fatalf("paired: %q", tt.Texts())
+	}
+	if err := tt.Click("Ask in Telegram too"); err != nil {
+		t.Fatal(err)
+	}
+	if vt, _ := a.vaults.Vault("prod-api"); !vt.Remote {
+		t.Fatal("not turned on")
+	}
+	snapshot(t, tt, "settings-telegram")
+	tt.Click("Done")
+	if !tt.HasText("passphrase in the Keychain, commands asked in Telegram too") {
+		t.Fatalf("vault page: %q", tt.Texts())
+	}
+}
+
+func TestDenialShownWithItsReason(t *testing.T) {
+	a := testApp(t)
+	rec, _ := a.history.Begin(history.Activity{Vault: "prod-api", Argv: []string{"make", "migrate"}, Cwd: "/work/api", Caller: caller.ClaudeCode}, func() {})
+	rec.Denied("Telegram", "use staging")
+	a.refresh()
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if !tt.HasText("Denied in Telegram: use staging") {
+		t.Fatalf("%q", tt.Texts())
+	}
+	snapshot(t, tt, "activities-denied")
+}
+
+func TestTelegramSetupCard(t *testing.T) {
+	a := testApp(t)
+	a.view.page = pageSetup
+	// Not checking the shell's PATH, which is not the test's.
+	a.view.setup.checked = true
+	tt := ui.NewTester(a.mainView, 960, 640)
+	if !tt.HasText("Make a bot of Gatelock's own with @BotFather") {
+		t.Fatalf("not paired: %q", tt.Texts())
+	}
+	if err := tt.Click("Bot token"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("not a token")
+	if err := tt.Click("Connect"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if a.view.setup.telegram.busy || !tt.HasText("that is not a bot token") {
+		t.Fatalf("a bad token: %q", tt.Texts())
+	}
+	snapshot(t, tt, "setup")
+
+	pairTelegram(a)
+	tt.Frame()
+	if !tt.HasText("Asks Ada (@ada) through @my_gatelock_bot") {
+		t.Fatalf("paired: %q", tt.Texts())
+	}
+	if err := tt.Click("Disconnect"); err != nil {
+		t.Fatal(err)
+	}
+	if _, paired := a.remote.paired(); paired {
+		t.Fatal("still paired")
 	}
 }
