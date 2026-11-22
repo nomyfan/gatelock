@@ -262,6 +262,15 @@ func TestWhenLostWithoutEnd(t *testing.T) {
 	}
 }
 
+func TestActivityDurationShowsDays(t *testing.T) {
+	if got := activityDuration(25*time.Hour + 3*time.Minute + 4*time.Second); got != "1d1h3m4s" {
+		t.Errorf("got %q", got)
+	}
+	if got := activityDuration(8*time.Hour + 4*time.Second); got != "8h0m4s" {
+		t.Errorf("got %q", got)
+	}
+}
+
 // The lock button locks only an unlocked vault, and shows which it is.
 func TestLockButtonFollowsUnlock(t *testing.T) {
 	a := testApp(t)

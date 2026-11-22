@@ -1395,5 +1395,20 @@ func when(r history.Activity) string {
 		}
 		end = time.Now()
 	}
-	return started + "  ·  " + end.Sub(r.StartedAt).Round(time.Second).String()
+	return started + "  ·  " + activityDuration(end.Sub(r.StartedAt))
+}
+
+func activityDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < 24*time.Hour {
+		return d.String()
+	}
+
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
+	hours := d / time.Hour
+	d -= hours * time.Hour
+	minutes := d / time.Minute
+	seconds := d - minutes*time.Minute
+	return fmt.Sprintf("%dd%dh%dm%ds", days, hours, minutes, seconds/time.Second)
 }
