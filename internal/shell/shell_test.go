@@ -19,6 +19,7 @@ var cases = []struct {
 	{[]string{"git", "commit", "-m", "fix: it's\n\nmore\tthere"}, `git commit -m $'fix: it\'s\n\nmore\tthere'`},
 	{[]string{"echo", "a\\b\x1b[31m\u202eevil\u0085"}, `echo $'a\\b\x1b[31m\xe2\x80\xaeevil\xc2\x85'`},
 	{[]string{"FOO=bar", "--x=y"}, "'FOO=bar' --x=y"},
+	{[]string{"echo", "=ls", "a=b", "=", "=="}, "echo '=ls' a=b '=' '=='"},
 	{[]string{"go", "test", "./...", "-run=TestA", "user@host:/p,q+r%"}, "go test ./... -run=TestA user@host:/p,q+r%"},
 }
 

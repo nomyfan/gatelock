@@ -650,9 +650,28 @@ func TestLongKeyKeepsToItsColumn(t *testing.T) {
 
 // pairTelegram pairs a's Telegram, as its Setup card would.
 func pairTelegram(a *app) {
-	a.remote.config = &telegram.Config{
+	a.remote.mu.Lock()
+	defer a.remote.mu.Unlock()
+	a.remote.set(&telegram.Config{
 		Bot:  telegram.User{ID: 1, IsBot: true, Username: "my_gatelock_bot"},
 		User: telegram.User{ID: 42, FirstName: "Ada", Username: "ada"},
+	}, nil)
+}
+
+// Disconnecting withdraws the questions asked in Telegram, which wait on
+// the pairing.
+func TestDisconnectWithdraws(t *testing.T) {
+	a := testApp(t)
+	pairTelegram(a)
+	pairing := a.remote.pairing
+	if err := a.remote.forget(); err != nil {
+		t.Fatal(err)
+	}
+	if pairing.Err() == nil {
+		t.Fatal("the pairing goes on")
+	}
+	if err := a.remote.ask(context.Background(), vault.Prompt{}); !errors.Is(err, errUnpaired) {
+		t.Fatalf("asked unpaired: %v", err)
 	}
 }
 

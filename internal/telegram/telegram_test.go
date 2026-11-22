@@ -32,6 +32,8 @@ type fakeAPI struct {
 	nextID  int64
 	nextMsg int64
 	calls   []call
+	// hold, if set, is called with a sent message's id before replying.
+	hold func(id int64)
 }
 
 type call struct {
@@ -82,6 +84,12 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.calls = append(f.calls, call{method, params})
+	var id int64
+	if method == "sendMessage" {
+		f.nextMsg++
+		id = f.nextMsg
+	}
+	hold := f.hold
 	f.mu.Unlock()
 	switch method {
 	case "getMe":
@@ -91,10 +99,9 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		defer f.mu.Unlock()
 		reply(map[string]any{"url": f.webhook})
 	case "sendMessage":
-		f.mu.Lock()
-		f.nextMsg++
-		id := f.nextMsg
-		f.mu.Unlock()
+		if hold != nil {
+			hold(id)
+		}
 		chatID := int64(params["chat_id"].(float64))
 		reply(message{MessageID: id, Chat: chat{ID: chatID, Type: "private"}, Text: params["text"].(string)})
 	default:
@@ -162,8 +169,21 @@ func asking(t *testing.T, f *fakeAPI, b *Bot, ctx context.Context) (int64, map[s
 	if e := fmt.Sprint(p["entities"]); e != "[map[length:11 offset:71 type:pre]]" {
 		t.Fatalf("entities %s", e)
 	}
+	data := buttons(t, p)
+	if len(data) != 3 {
+		t.Fatalf("buttons %v", data)
+	}
+	f.mu.Lock()
+	id := f.nextMsg
+	f.mu.Unlock()
+	return id, data, answer
+}
+
+// buttons returns the data of a question's buttons, by press.
+func buttons(t *testing.T, sent map[string]any) map[string]string {
+	t.Helper()
 	data := map[string]string{}
-	for _, row := range p["reply_markup"].(map[string]any)["inline_keyboard"].([]any) {
+	for _, row := range sent["reply_markup"].(map[string]any)["inline_keyboard"].([]any) {
 		for _, b := range row.([]any) {
 			d := b.(map[string]any)["callback_data"].(string)
 			if len(d) > 64 {
@@ -173,10 +193,7 @@ func asking(t *testing.T, f *fakeAPI, b *Bot, ctx context.Context) (int64, map[s
 			data[press] = d
 		}
 	}
-	f.mu.Lock()
-	id := f.nextMsg
-	f.mu.Unlock()
-	return id, data, answer
+	return data
 }
 
 func press(f *fakeAPI, from User, asked int64, data string) {
@@ -290,6 +307,144 @@ func TestOnlyThePairedUserAnswers(t *testing.T) {
 		t.Fatalf("answered %v", err)
 	default:
 	}
+	press(f, me, asked, data[pressDeny])
+	if err := wait(t, answer); !errors.Is(err, vault.ErrDenied) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// An answer got before the Mac learns which message asks still counts:
+// Telegram may show the question before replying to sendMessage.
+func TestAnsweredBeforeSent(t *testing.T) {
+	f, b := newFake(t)
+	held, release := holding(t, f, 1)
+	answer := make(chan error, 1)
+	go func() {
+		answer <- NewApprover(b, user, "Mac").Ask(context.Background(), vault.Prompt{Reason: "unlock prod"})
+	}()
+	asked := <-held
+	data := buttons(t, f.waitCall("sendMessage", nil))
+	press(f, me, asked, data[pressDeny])
+	polled(f)
+	release()
+	if err := wait(t, answer); !errors.Is(err, vault.ErrDenied) {
+		t.Fatalf("got %v", err)
+	}
+	edited(f, asked, "\n\n❌ Denied")
+}
+
+// polled waits until the bot has got every update pushed.
+func polled(f *fakeAPI) {
+	f.mu.Lock()
+	last := f.nextID
+	f.mu.Unlock()
+	f.waitCall("getUpdates", func(p map[string]any) bool { return int64(p["offset"].(float64)) > last })
+}
+
+// holding has the fake hold back its reply to the nth message sent from
+// now (from 1), and returns the id it holds and what releases it, which
+// the test's end calls too, so that a failing test does not hang.
+func holding(t *testing.T, f *fakeAPI, n int64) (chan int64, func()) {
+	held, released := make(chan int64, 1), make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
+	t.Cleanup(release)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	nth := f.nextMsg + n
+	f.hold = func(id int64) {
+		if id == nth {
+			held <- id
+			<-released
+		}
+	}
+	return held, release
+}
+
+// A reason sent before the Mac learns which message asks for it still
+// denies, before an Approve pressed after it.
+func TestReasonBeforePromptSent(t *testing.T) {
+	f, b := newFake(t)
+	asked, data, answer := asking(t, f, b, context.Background())
+	held, release := holding(t, f, 1)
+	press(f, me, asked, data[pressReason])
+	prompt := <-held
+	f.push(update{Message: &message{MessageID: 900, From: &me, Chat: privateChat(), Text: "use staging", ReplyTo: &message{MessageID: prompt}}})
+	press(f, me, asked, data[pressApprove])
+	polled(f)
+	release()
+	var denied *vault.DeniedError
+	if err := wait(t, answer); !errors.As(err, &denied) || denied.Reason != "use staging" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Only what may answer is held while the question is sent, so that no
+// number of other updates can push an answer out.
+func TestHeldOnlyAnswers(t *testing.T) {
+	f, b := newFake(t)
+	held, release := holding(t, f, 1)
+	answer := make(chan error, 1)
+	go func() {
+		answer <- NewApprover(b, user, "Mac").Ask(context.Background(), vault.Prompt{Reason: "unlock prod"})
+	}()
+	asked := <-held
+	data := buttons(t, f.waitCall("sendMessage", nil))
+	other := User{ID: 7, FirstName: "Eve"}
+	for i := range 2 * maxHeld {
+		f.push(update{Message: &message{MessageID: int64(1000 + i), From: &other, Chat: chat{ID: 7, Type: "private"}, Text: "hi", ReplyTo: &message{MessageID: asked}}})
+		f.push(update{Message: &message{MessageID: int64(5000 + i), From: &me, Chat: privateChat(), Text: "not a reply"}})
+	}
+	press(f, me, asked, data[pressDeny])
+	polled(f)
+	release()
+	if err := wait(t, answer); !errors.Is(err, vault.ErrDenied) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Past maxHeld answers that may be to the question being sent, Telegram
+// gives up asking, which is no answer.
+func TestTooManyHeld(t *testing.T) {
+	f, b := newFake(t)
+	held, release := holding(t, f, 1)
+	answer := make(chan error, 1)
+	go func() {
+		answer <- NewApprover(b, user, "Mac").Ask(context.Background(), vault.Prompt{Reason: "unlock prod"})
+	}()
+	asked := <-held
+	for i := range maxHeld + 1 {
+		f.push(update{Message: &message{MessageID: int64(1000 + i), From: &me, Chat: privateChat(), Text: "no", ReplyTo: &message{MessageID: 999}}})
+	}
+	polled(f)
+	release()
+	if err := wait(t, answer); !errors.Is(err, errTooMany) || errors.Is(err, vault.ErrDenied) {
+		t.Fatalf("got %v", err)
+	}
+	edited(f, asked, "answer at the Mac.")
+}
+
+// A command too long to show whole can only be denied in Telegram.
+func TestTooLongToApprove(t *testing.T) {
+	f, b := newFake(t)
+	reason := "unlock prod to run " + strings.Repeat("x", maxCommand+1)
+	answer := make(chan error, 1)
+	go func() {
+		answer <- NewApprover(b, user, "Mac").Ask(context.Background(), vault.Prompt{Reason: reason, Command: [2]int{19, len(reason)}})
+	}()
+	p := f.waitCall("sendMessage", nil)
+	if !strings.HasSuffix(p["text"].(string), "x…\n\nToo long to show here whole: approve it at the Mac, if you do.") {
+		t.Fatalf("asked %q", p["text"])
+	}
+	data := buttons(t, p)
+	if _, ok := data[pressApprove]; ok || len(data) != 2 {
+		t.Fatalf("buttons %v", data)
+	}
+	f.mu.Lock()
+	asked := f.nextMsg
+	f.mu.Unlock()
+	// Approve, were it pressed nonetheless, is no answer.
+	_, nonce, _ := strings.Cut(data[pressDeny], ":")
+	press(f, me, asked, pressApprove+":"+nonce)
 	press(f, me, asked, data[pressDeny])
 	if err := wait(t, answer); !errors.Is(err, vault.ErrDenied) {
 		t.Fatalf("got %v", err)
@@ -418,7 +573,10 @@ func TestQuestion(t *testing.T) {
 		// UTF-16 counts 🔐 and 💻 as two each.
 		{`unlock 🔐 to run echo "é 🔐" (reason given: "check it")`, [2]int{19, 33}, "Gatelock on Ada's 💻 wants to unlock 🔐 to run:\necho \"é 🔐\"\n(reason given: \"check it\")", &entity{"pre", 48, 11}},
 	} {
-		text, entities := a.question(vault.Prompt{Reason: c.reason, Command: c.command})
+		text, entities, whole := a.question(vault.Prompt{Reason: c.reason, Command: c.command})
+		if !whole {
+			t.Errorf("%q: not whole", c.reason)
+		}
 		if text != c.text {
 			t.Errorf("%q: asked %q", c.reason, text)
 		}

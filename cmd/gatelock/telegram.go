@@ -32,6 +32,22 @@ type remote struct {
 	mu       sync.Mutex
 	config   *telegram.Config // nil while not paired
 	approver *telegram.Approver
+	// pairing is done once the pairing is gone, which withdraws what it
+	// asks; nil while not paired.
+	pairing context.Context
+	unpair  context.CancelFunc
+}
+
+// set makes c, asked through ap if not nil, the pairing, ending the one
+// before; with r.mu held.
+func (r *remote) set(c *telegram.Config, ap *telegram.Approver) {
+	if r.unpair != nil {
+		r.unpair()
+	}
+	r.config, r.approver, r.pairing, r.unpair = c, ap, nil, nil
+	if c != nil {
+		r.pairing, r.unpair = context.WithCancel(context.Background())
+	}
 }
 
 // load reads the pairing kept, if any.
@@ -41,7 +57,7 @@ func (r *remote) load() {
 		return
 	}
 	r.mu.Lock()
-	r.config = &c
+	r.set(&c, nil)
 	r.mu.Unlock()
 }
 
@@ -55,16 +71,23 @@ func (r *remote) paired() (telegram.Config, bool) {
 	return *r.config, true
 }
 
+// errUnpaired is what asking returns once the pairing is gone.
+var errUnpaired = errors.New("Telegram is not set up")
+
 // ask asks the paired user in Telegram, as telegram.Approver.Ask does.
+// Disconnecting withdraws the question, and an answer got after counts
+// for nothing.
 func (r *remote) ask(ctx context.Context, p vault.Prompt) error {
 	r.mu.Lock()
 	if r.config == nil {
 		r.mu.Unlock()
-		return errors.New("Telegram is not set up")
+		return errUnpaired
 	}
-	ap := r.approver
-	user := r.config.User.ID
+	ap, user, pairing := r.approver, r.config.User.ID, r.pairing
 	r.mu.Unlock()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(pairing, cancel)()
 	if ap == nil {
 		token, err := r.kc.Get(tokenAccount)
 		if err != nil {
@@ -76,12 +99,16 @@ func (r *remote) ask(ctx context.Context, p vault.Prompt) error {
 		}
 		ap = telegram.NewApprover(bot, user, computerName())
 		r.mu.Lock()
-		if r.config != nil && r.config.User.ID == user && r.approver == nil {
+		if r.pairing == pairing && r.approver == nil {
 			r.approver = ap
 		}
 		r.mu.Unlock()
 	}
-	return ap.Ask(ctx, p)
+	err := ap.Ask(ctx, p)
+	if pairing.Err() != nil {
+		return errUnpaired
+	}
+	return err
 }
 
 // pair keeps the pairing of user with bot, whose token it is.
@@ -93,9 +120,9 @@ func (r *remote) pair(bot *telegram.Bot, token string, c telegram.Config) error 
 		r.kc.Delete(tokenAccount)
 		return err
 	}
+	ap := telegram.NewApprover(bot, c.User.ID, computerName())
 	r.mu.Lock()
-	r.config = &c
-	r.approver = telegram.NewApprover(bot, c.User.ID, computerName())
+	r.set(&c, ap)
 	r.mu.Unlock()
 	return nil
 }
@@ -106,7 +133,7 @@ func (r *remote) forget() error {
 		return err
 	}
 	r.mu.Lock()
-	r.config, r.approver = nil, nil
+	r.set(nil, nil)
 	r.mu.Unlock()
 	return r.kc.Delete(tokenAccount)
 }

@@ -26,14 +26,15 @@ func Join(argv []string) string {
 }
 
 // Quote returns arg as one word that bash or zsh reads back as arg: as it
-// is if nothing in it is special, else in single quotes, or, if it holds
+// is if nothing in it is special, nor does it begin with = (which zsh
+// reads as a command's path), else in single quotes, or, if it holds
 // control or format characters, in $'...' with those escaped, so that it
 // stays on one line and shows each character there is.
 func Quote(arg string) string {
 	switch {
 	case arg == "":
 		return "''"
-	case strings.IndexFunc(arg, special) < 0:
+	case strings.IndexFunc(arg, special) < 0 && arg[0] != '=':
 		return arg
 	case strings.IndexFunc(arg, hidden) < 0:
 		return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
