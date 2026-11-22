@@ -28,6 +28,7 @@ import (
 
 	"gatelock/internal/caller"
 	"gatelock/internal/history"
+	"gatelock/internal/shell"
 	"gatelock/internal/vault"
 )
 
@@ -209,15 +210,18 @@ func serve(nc net.Conn, v *vault.Store, h *history.Store) {
 		}
 	}()
 
-	reason := fmt.Sprintf("unlock %s to run %s", req.Vault, strings.Join(req.Argv, " "))
+	reason := "unlock " + req.Vault + " to run "
 	if by != "" {
-		reason = fmt.Sprintf("unlock %s for %s to run %s", req.Vault, by, strings.Join(req.Argv, " "))
+		reason = "unlock " + req.Vault + " for " + by + " to run "
 	}
+	command := [2]int{len(reason), 0}
+	reason += shell.Join(req.Argv)
+	command[1] = len(reason)
 	if purpose != "" {
 		// Quoted, so that it cannot pass for what Gatelock says.
 		reason += ` (reason given: "` + purpose + `")`
 	}
-	secrets, err := v.ResolveRemote(ctx, req.Vault, reason)
+	secrets, err := v.ResolveRemote(ctx, req.Vault, reason, command)
 	mu.Lock()
 	switch {
 	case stopped:

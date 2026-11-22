@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"gatelock/internal/history"
+	"gatelock/internal/shell"
 	"gatelock/internal/vault"
 )
 
@@ -1192,7 +1193,8 @@ func (a *app) activityItem(c *ui.Context, r history.Activity, divided bool) {
 			ui.Icon(c, chevronIcon).Size(12, 12).Shrink(0).TextColor(t.TextMuted).Rotate(90 * p.Progress())
 			statusIcon(c, r)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(t.Space(0.5)).Children(func() {
-				ui.Text(c, strings.Join(r.Argv, " ")).Font("monospace").SingleLine().Tooltip(strings.Join(r.Argv, " "))
+				command := shell.Join(r.Argv)
+				ui.Text(c, command).Font("monospace").SingleLine().Tooltip(command)
 				ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(t.Space(1)).Children(func() {
 					about := r.Vault + "  ·  " + r.Cwd
 					if r.Caller != "" {

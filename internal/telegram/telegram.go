@@ -193,9 +193,21 @@ func (b *Bot) Me(ctx context.Context) (User, error) {
 	return me, nil
 }
 
-// send sends text to chat, with markup if not nil, and returns the message.
-func (b *Bot) send(ctx context.Context, chat int64, text string, markup any, replyTo int64) (message, error) {
+// entity marks a part of a message's text, as code. Offset and Length
+// count UTF-16 code units.
+type entity struct {
+	Type   string `json:"type"`
+	Offset int    `json:"offset"`
+	Length int    `json:"length"`
+}
+
+// send sends text to chat, marked with entities, with markup if not nil,
+// and returns the message.
+func (b *Bot) send(ctx context.Context, chat int64, text string, entities []entity, markup any, replyTo int64) (message, error) {
 	params := map[string]any{"chat_id": chat, "text": text}
+	if entities != nil {
+		params["entities"] = entities
+	}
 	if markup != nil {
 		params["reply_markup"] = markup
 	}
@@ -207,18 +219,23 @@ func (b *Bot) send(ctx context.Context, chat int64, text string, markup any, rep
 	return m, err
 }
 
-// edit replaces a message's text, and takes its buttons away, in the
-// background: failing leaves the message as it was, which is no harm.
-func (b *Bot) edit(chat, id int64, text string) {
+// edit replaces a message's text, marked with entities, and takes its
+// buttons away, in the background: failing leaves the message as it was,
+// which is no harm.
+func (b *Bot) edit(chat, id int64, text string, entities []entity) {
+	params := map[string]any{
+		"chat_id":      chat,
+		"message_id":   id,
+		"text":         text,
+		"reply_markup": map[string]any{"inline_keyboard": [][]any{}},
+	}
+	if entities != nil {
+		params["entities"] = entities
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		b.call(ctx, "editMessageText", map[string]any{
-			"chat_id":      chat,
-			"message_id":   id,
-			"text":         text,
-			"reply_markup": map[string]any{"inline_keyboard": [][]any{}},
-		}, nil)
+		b.call(ctx, "editMessageText", params, nil)
 	}()
 }
 
@@ -329,7 +346,7 @@ func (b *Bot) Pair(ctx context.Context, code string) (User, error) {
 	defer cancel()
 	select {
 	case m := <-paired:
-		if _, err := b.send(ctx, m.Chat.ID, "Paired with Gatelock. It will ask you here before a command may use a vault that allows it.", nil, 0); err != nil {
+		if _, err := b.send(ctx, m.Chat.ID, "Paired with Gatelock. It will ask you here before a command may use a vault that allows it.", nil, nil, 0); err != nil {
 			return User{}, err
 		}
 		return *m.From, nil

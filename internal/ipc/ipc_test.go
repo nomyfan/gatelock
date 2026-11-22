@@ -284,6 +284,9 @@ func TestPurposeShownAndRecorded(t *testing.T) {
 	if len(au.prompts) != 1 || !strings.HasSuffix(au.prompts[0].Reason, `to run make deploy (reason given: "deploy 'the' hotfix")`) {
 		t.Fatalf("asked %+v", au.prompts)
 	}
+	if p := au.prompts[0]; p.Reason[p.Command[0]:p.Command[1]] != "make deploy" {
+		t.Fatalf("command marked at %v in %q", p.Command, p.Reason)
+	}
 }
 
 func TestCleanPurpose(t *testing.T) {

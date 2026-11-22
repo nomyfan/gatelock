@@ -56,7 +56,7 @@ func (r *remote) paired() (telegram.Config, bool) {
 }
 
 // ask asks the paired user in Telegram, as telegram.Approver.Ask does.
-func (r *remote) ask(ctx context.Context, reason string) error {
+func (r *remote) ask(ctx context.Context, p vault.Prompt) error {
 	r.mu.Lock()
 	if r.config == nil {
 		r.mu.Unlock()
@@ -81,7 +81,7 @@ func (r *remote) ask(ctx context.Context, reason string) error {
 		}
 		r.mu.Unlock()
 	}
-	return ap.Ask(ctx, reason)
+	return ap.Ask(ctx, p)
 }
 
 // pair keeps the pairing of user with bot, whose token it is.
@@ -140,7 +140,7 @@ func (a *app) ConfirmUser(ctx context.Context, p vault.Prompt) error {
 		}
 		return err
 	}, func(ctx context.Context) error {
-		return a.remote.ask(ctx, p.Reason)
+		return a.remote.ask(ctx, p)
 	})
 }
 

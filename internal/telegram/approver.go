@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"gatelock/internal/vault"
@@ -15,10 +16,13 @@ import (
 const By = "Telegram"
 
 // The most of a reason, and of what a question asks, sent or kept, in
-// runes. A message holds 4096.
+// runes. A message holds 4096. A question that names a command holds at
+// most maxCommand of it, and maxAround of what comes before it and after.
 const (
 	maxReason   = 500
 	maxQuestion = 3000
+	maxCommand  = 2000
+	maxAround   = 500
 )
 
 // Approver asks the paired user, in their private chat with the bot.
@@ -42,14 +46,15 @@ const (
 	pressReason  = "r"
 )
 
-// Ask asks the user to approve what reason says, as "unlock prod to run
-// make deploy". It returns nil if they approve, a *vault.DeniedError if
-// they deny, with what they said if they deny with a reason, ctx's error
-// once ctx is done, which withdraws the question, or another error if the
-// question could not be sent.
-func (a *Approver) Ask(ctx context.Context, reason string) error {
+// Ask asks the user to approve what p.Reason says, as "unlock prod to run
+// make deploy", with the command p.Command marks as a block of code. It
+// returns nil if they approve, a *vault.DeniedError if they deny, with what
+// they said if they deny with a reason, ctx's error once ctx is done, which
+// withdraws the question, or another error if the question could not be
+// sent.
+func (a *Approver) Ask(ctx context.Context, p vault.Prompt) error {
 	nonce := rand.Text()
-	question := truncate("Gatelock on "+a.host+" wants to "+reason, maxQuestion) + "."
+	question, entities := a.question(p)
 	answers := make(chan error, 1)
 	give := func(err error) {
 		select {
@@ -69,7 +74,7 @@ func (a *Approver) Ask(ctx context.Context, reason string) error {
 			return
 		}
 		done = true
-		a.bot.edit(a.user, asked, question+"\n\n"+text)
+		a.bot.edit(a.user, asked, question+"\n\n"+text, entities)
 		give(err)
 	}
 	// Subscribed before the question is sent, so that no answer is missed.
@@ -125,7 +130,7 @@ func (a *Approver) Ask(ctx context.Context, reason string) error {
 	})
 	defer cancel()
 
-	sent, err := a.bot.send(ctx, a.user, question, keyboard(nonce), 0)
+	sent, err := a.bot.send(ctx, a.user, question, entities, keyboard(nonce), 0)
 	if err != nil {
 		return err
 	}
@@ -144,6 +149,34 @@ func (a *Approver) Ask(ctx context.Context, reason string) error {
 	}
 }
 
+// question is the text of what Ask asks, and its entities: the reason in
+// a sentence, or, when it names a command, the command in a block of code
+// of its own, between what comes before it and after.
+func (a *Approver) question(p vault.Prompt) (string, []entity) {
+	text := "Gatelock on " + a.host + " wants to "
+	c := p.Command
+	if c[0] >= c[1] || c[1] > len(p.Reason) {
+		return truncate(text+p.Reason, maxQuestion) + ".", nil
+	}
+	text += truncate(strings.TrimSpace(p.Reason[:c[0]]), maxAround) + ":\n"
+	command := truncate(p.Reason[c[0]:c[1]], maxCommand)
+	code := entity{Type: "pre", Offset: utf16Len(text), Length: utf16Len(command)}
+	text += command
+	if after := strings.TrimSpace(p.Reason[c[1]:]); after != "" {
+		text += "\n" + truncate(after, maxAround)
+	}
+	return text, []entity{code}
+}
+
+// utf16Len is the length of s in UTF-16 code units, as Telegram counts.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		n += utf16.RuneLen(r)
+	}
+	return n
+}
+
 // mine reports whether an answer came from the paired user, in their
 // private chat with the bot, whose id is theirs.
 func (a *Approver) mine(from User, in chat) bool {
@@ -155,7 +188,7 @@ func (a *Approver) mine(from User, in chat) bool {
 func (a *Approver) askReason(asked int64, sent func(int64)) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	m, err := a.bot.send(ctx, a.user, "Why deny it? Reply to this message; the agent sees your reason.", map[string]any{
+	m, err := a.bot.send(ctx, a.user, "Why deny it? Reply to this message; the agent sees your reason.", nil, map[string]any{
 		"force_reply":             true,
 		"input_field_placeholder": "Reason",
 	}, asked)

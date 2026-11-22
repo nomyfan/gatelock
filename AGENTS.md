@@ -34,7 +34,7 @@ This is the interface agents and users' scripts depend on; keep it stable.
 
 ## Modules
 
-Dependencies run `main` → `ipc` → `vault`, `history`, `caller`; `main` → `launch` → `redact`; `main` → `approve`, `telegram`; `macauth`, `approve` and `telegram` use `vault` only for `ErrDenied` and `DeniedError`. Only `main` imports MyGo: the core packages stay free of it, so that the UI framework can change.
+Dependencies run `main` → `ipc` → `vault`, `history`, `caller`, `shell`; `main` → `shell`; `main` → `launch` → `redact`; `main` → `approve`, `telegram`; `macauth`, `approve` and `telegram` use `vault` only for `ErrDenied` and `DeniedError`. Only `main` imports MyGo: the core packages stay free of it, so that the UI framework can change.
 
 ### `cmd/gatelock/` (package `main`)
 
@@ -54,7 +54,7 @@ The entry point, the CLI side of `gatelock run`, and the app's UI.
 `Store` holds the vaults; `Vault` is what is known of one without unlocking it. The vaults and their envs on disk, encryption, the Keychain, authorization policies and the unlock cache. Safe from several goroutines.
 
 - Each vault has an age hybrid key pair: `identity.age` is the private key encrypted with the passphrase (scrypt), `env/<hex(KEY)>.age` one value each encrypted to the public key, so envs can be added, changed or renamed without unlocking (hex because the file system ignores case). `RenameEnv` links the value under the new name, saves the meta, then removes the old file, so the file the meta names is always there. `meta.json` (with `version`) holds the name, recipient, policy, Keychain flag, `remote` (left out while off, so metas before it read the same) and the env keys; key names are not secret. Meta is written to a temporary file and renamed.
-- `Authorizer.ConfirmUser` gets a `Prompt`: the vault, the reason, and `Remote`, set only when `ResolveRemote` asks (as `ipc` does for commands, not the app for its own pages), the vault allows it (`SetRemote`) and the Keychain keeps its passphrase. A denial is `ErrDenied`, or a `*DeniedError` (`Is` `ErrDenied`) that says where (`By`) and why (`Reason`).
+- `Authorizer.ConfirmUser` gets a `Prompt`: the vault, the reason, `Command` (where the reason names the command to run, as byte offsets, so that Telegram can set it apart; given to `ResolveRemote`), and `Remote`, set only when `ResolveRemote` asks (as `ipc` does for commands, not the app for its own pages), the vault allows it (`SetRemote`) and the Keychain keeps its passphrase. A denial is `ErrDenied`, or a `*DeniedError` (`Is` `ErrDenied`) that says where (`By`) and why (`Reason`).
 - Unlocking means holding the decrypted identity; the policies (`Every`, `TTL`, `Session`) differ only in how long it is cached, which `Vault.Unlocked` and `Vault.Expires` report. `Resolve` reads the env files with the store's lock held, so a rename or delete can't remove one it is about to read, and decrypts after. `Resolve` checks the cache, then takes the `prompting` lock, which also keeps the user asked one thing at a time, and checks again, so concurrent requests under TTL and Session share one authorization. With the Keychain on, `ConfirmUser` comes first, then the passphrase is read from the Keychain (account: the vault's id); a missing or stale entry falls back to asking and is repaired.
 - Turning the Keychain on or off and deleting a vault hold `prompting` throughout, so that an unlock waiting for the user can't write the passphrase back afterwards. `ChangePassphrase` returns `ErrKeychainStale` when the identity was rewritten but the Keychain wasn't; the next unlock repairs it.
 - `Import` reads `.env` with godotenv; `Dotenv` writes it back with every value quoted, so that it reads back as it was (`0042`, quotes, `$`, newlines); `DotenvExample` writes the keys with no values.
@@ -84,6 +84,10 @@ The record of activities, owned by the app: each activity's meta and its masked 
 
 `Of(pid)` names the program that ran a process, from the processes above it (`kern.proc.pid` for the parent, `kern.procargs2` for the executable and argv): Claude Code or Codex if either is among them, else the first that is not a shell or the like (`passThrough`), by the outermost `.app` it is in or its file name. What processes say of themselves can be made up, so it is a hint shown to the user, never a check.
 
+### `internal/shell`
+
+`Join` writes a command's argv as one line that bash or zsh reads back as it: bare words where nothing is special, single quotes otherwise, and `$'...'` with control and format characters escaped (`\n`, `\t`, else `\xHH` byte by byte, as macOS's bash 3.2 reads no `\u`), so that what runs shows on one line, every character visible. Both the question asked (`ipc`) and the Activities page show commands through it.
+
 ### `internal/macauth`
 
 `ConfirmUser`: Touch ID or the login password through LocalAuthentication, called with purego (no cgo). The user canceling is `vault.ErrDenied`, and so is the system canceling, which is `ErrSystemCancel` too; a canceled context invalidates the dialog.
@@ -94,7 +98,7 @@ The record of activities, owned by the app: each activity's meta and its masked 
 
 ### `internal/telegram`
 
-Asking in a Telegram chat. `Bot` calls the Bot API (its errors never hold the token, which is in the URL) and long-polls `getUpdates` only while anyone subscribes, one poll at a time; `Me` checks the token and refuses a bot with a webhook, as polling would not work. `Pair` waits for `/start <code>` from `Link`. `Approver.Ask` sends a question with Approve, Deny, and Deny with a reason…, which asks for a reply (ForceReply); a reply to the question denies it too, with that reason. Only the paired user's answers in their private chat, not a bot's, count; the question is edited to say how it was answered, or that it is no longer waiting when withdrawn. Tests run against a fake Bot API. `Config` is `telegram.json`.
+Asking in a Telegram chat. `Bot` calls the Bot API (its errors never hold the token, which is in the URL) and long-polls `getUpdates` only while anyone subscribes, one poll at a time; `Me` checks the token and refuses a bot with a webhook, as polling would not work. `Pair` waits for `/start <code>` from `Link`. `Approver.Ask` sends a question, with the command the `Prompt` marks in a block of code (a `pre` entity, so nothing needs escaping), and Approve, Deny, and Deny with a reason…, which asks for a reply (ForceReply); a reply to the question denies it too, with that reason. Only the paired user's answers in their private chat, not a bot's, count; the question is edited to say how it was answered, or that it is no longer waiting when withdrawn. Tests run against a fake Bot API. `Config` is `telegram.json`.
 
 ### Other directories
 

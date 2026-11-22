@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -149,14 +150,17 @@ func asking(t *testing.T, f *fakeAPI, b *Bot, ctx context.Context) (int64, map[s
 	t.Helper()
 	answer := make(chan error, 1)
 	go func() {
-		answer <- NewApprover(b, user, "Ada's MacBook").Ask(ctx, "unlock prod for Claude Code to run make deploy")
+		answer <- NewApprover(b, user, "Ada's MacBook").Ask(ctx, vault.Prompt{Reason: "unlock prod for Claude Code to run make deploy", Command: [2]int{35, 46}})
 	}()
 	p := f.waitCall("sendMessage", nil)
 	if int64(p["chat_id"].(float64)) != user {
 		t.Fatalf("asked chat %v", p["chat_id"])
 	}
-	if text := p["text"].(string); text != "Gatelock on Ada's MacBook wants to unlock prod for Claude Code to run make deploy." {
+	if text := p["text"].(string); text != "Gatelock on Ada's MacBook wants to unlock prod for Claude Code to run:\nmake deploy" {
 		t.Fatalf("asked %q", text)
+	}
+	if e := fmt.Sprint(p["entities"]); e != "[map[length:11 offset:71 type:pre]]" {
+		t.Fatalf("entities %s", e)
 	}
 	data := map[string]string{}
 	for _, row := range p["reply_markup"].(map[string]any)["inline_keyboard"].([]any) {
@@ -204,6 +208,9 @@ func TestApprove(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	p := edited(f, asked, "\n\n✅ Approved")
+	if p["entities"] == nil {
+		t.Fatal("the command no longer marked once answered")
+	}
 	if kb := p["reply_markup"].(map[string]any)["inline_keyboard"].([]any); len(kb) != 0 {
 		t.Fatal("buttons left on the question")
 	}
@@ -309,7 +316,7 @@ func TestWithdrawn(t *testing.T) {
 func TestSendFailing(t *testing.T) {
 	f, b := newFake(t)
 	b.api = f.srv.URL + "/gone"
-	err := NewApprover(b, user, "Mac").Ask(context.Background(), "unlock prod")
+	err := NewApprover(b, user, "Mac").Ask(context.Background(), vault.Prompt{Reason: "unlock prod"})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || errors.Is(err, vault.ErrDenied) {
 		t.Fatalf("got %v", err)
@@ -395,5 +402,28 @@ func TestConfig(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	if got := truncate("héllo wörld", 5); got != "héll…" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestQuestion(t *testing.T) {
+	a := NewApprover(nil, user, "Ada's 💻")
+	for _, c := range []struct {
+		reason  string
+		command [2]int
+		text    string
+		code    *entity
+	}{
+		{"show the values", [2]int{}, "Gatelock on Ada's 💻 wants to show the values.", nil},
+		{"unlock prod to run make deploy", [2]int{19, 30}, "Gatelock on Ada's 💻 wants to unlock prod to run:\nmake deploy", &entity{"pre", 50, 11}},
+		// UTF-16 counts 🔐 and 💻 as two each.
+		{`unlock 🔐 to run echo "é 🔐" (reason given: "check it")`, [2]int{19, 33}, "Gatelock on Ada's 💻 wants to unlock 🔐 to run:\necho \"é 🔐\"\n(reason given: \"check it\")", &entity{"pre", 48, 11}},
+	} {
+		text, entities := a.question(vault.Prompt{Reason: c.reason, Command: c.command})
+		if text != c.text {
+			t.Errorf("%q: asked %q", c.reason, text)
+		}
+		if c.code == nil && entities != nil || c.code != nil && (len(entities) != 1 || entities[0] != *c.code) {
+			t.Errorf("%q: entities %+v", c.reason, entities)
+		}
 	}
 }

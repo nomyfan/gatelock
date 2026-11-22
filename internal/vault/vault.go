@@ -120,6 +120,10 @@ type Secret struct {
 type Prompt struct {
 	Vault  string
 	Reason string // what for, as "unlock prod to run make deploy"
+	// Command is where Reason names the command to run, as byte offsets:
+	// Reason[Command[0]:Command[1]], so that a display can set it apart.
+	// Both are 0 when it names none.
+	Command [2]int
 	// Remote is set when the user may approve away from the Mac too: the
 	// vault allows it, the Keychain keeps its passphrase, and a command
 	// asks, not the user in the app.
@@ -555,17 +559,21 @@ func DotenvExample(envs []Env) []byte {
 // error, which also dismisses the question asked. It is for the user in
 // the app, who is asked at the Mac.
 func (s *Store) Resolve(ctx context.Context, name, reason string) ([]Secret, error) {
-	return s.resolve(ctx, name, reason, false)
+	return s.resolve(ctx, Prompt{Vault: name, Reason: reason})
 }
 
 // ResolveRemote is Resolve for a command, which the user may approve away
-// from the Mac too, if the vault allows it.
-func (s *Store) ResolveRemote(ctx context.Context, name, reason string) ([]Secret, error) {
-	return s.resolve(ctx, name, reason, true)
+// from the Mac too, if the vault allows it; command is where reason names
+// the command, as Prompt.Command.
+func (s *Store) ResolveRemote(ctx context.Context, name, reason string, command [2]int) ([]Secret, error) {
+	return s.resolve(ctx, Prompt{Vault: name, Reason: reason, Command: command, Remote: true})
 }
 
-func (s *Store) resolve(ctx context.Context, name, reason string, remote bool) ([]Secret, error) {
-	identity, err := s.unlock(ctx, name, reason, remote)
+// resolve resolves the vault p names, asking with p if need be; p.Remote
+// asks for it to be set, if the vault allows it.
+func (s *Store) resolve(ctx context.Context, p Prompt) ([]Secret, error) {
+	name := p.Vault
+	identity, err := s.unlock(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -604,8 +612,9 @@ func (s *Store) resolve(ctx context.Context, name, reason string, remote bool) (
 }
 
 // unlock returns the vault's private key, from its unlock if one holds,
-// or else asking the user, and keeping it as the policy allows.
-func (s *Store) unlock(ctx context.Context, name, reason string, remote bool) (*age.HybridIdentity, error) {
+// or else asking the user with p, and keeping it as the policy allows.
+func (s *Store) unlock(ctx context.Context, p Prompt) (*age.HybridIdentity, error) {
+	name := p.Vault
 	if identity, _, err := s.unlocked(name); identity != nil || err != nil {
 		return identity, err
 	}
@@ -621,10 +630,10 @@ func (s *Store) unlock(ctx context.Context, name, reason string, remote bool) (*
 	}
 	s.mu.Lock()
 	id, keychain, policy, gen := sv.id, sv.meta.Keychain, sv.meta.Policy, sv.gen
-	remote = remote && sv.meta.Remote
+	p.Remote = p.Remote && sv.meta.Remote
 	s.mu.Unlock()
 
-	identity, err = s.authorize(ctx, id, keychain, Prompt{Vault: name, Reason: reason, Remote: remote})
+	identity, err = s.authorize(ctx, id, keychain, p)
 	if err != nil {
 		return nil, err
 	}

@@ -656,8 +656,8 @@ func TestRemoteOnlyForCommandsWithTheKeychain(t *testing.T) {
 		return p
 	}
 
-	v.ResolveRemote(context.Background(), "dev", "run make")
-	if p := last(); p.Remote || p.Vault != "dev" || p.Reason != "run make" {
+	v.ResolveRemote(context.Background(), "dev", "run make", [2]int{4, 8})
+	if p := last(); p.Remote || p.Vault != "dev" || p.Reason != "run make" || p.Command != [2]int{4, 8} {
 		t.Fatalf("vault not allowing it: asked %+v", p)
 	}
 	if err := v.SetRemote("dev", true); err != nil {
@@ -666,7 +666,7 @@ func TestRemoteOnlyForCommandsWithTheKeychain(t *testing.T) {
 	if vt, _ := v.Vault("dev"); !vt.Remote {
 		t.Fatal("Remote not reported")
 	}
-	v.ResolveRemote(context.Background(), "dev", "run make")
+	v.ResolveRemote(context.Background(), "dev", "run make", [2]int{4, 8})
 	if p := last(); !p.Remote {
 		t.Fatalf("command: asked %+v", p)
 	}
@@ -682,7 +682,7 @@ func TestRemoteOnlyForCommandsWithTheKeychain(t *testing.T) {
 	// Without the Keychain, the passphrase is asked for at the Mac.
 	v.SetRemote("plain", true)
 	asks := auth.asks.Load()
-	if _, err := v.ResolveRemote(context.Background(), "plain", "run make"); err != nil {
+	if _, err := v.ResolveRemote(context.Background(), "plain", "run make", [2]int{4, 8}); err != nil {
 		t.Fatal(err)
 	}
 	if auth.asks.Load() != asks+1 || len(auth.prompts) != 0 {
